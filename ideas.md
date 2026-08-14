@@ -72,3 +72,6 @@ Use a compact compass-cross mark made from four offset brackets that imply a map
 - Every major section must include a functional cartographic artifact: a coordinate badge, lineage trail, annotated connector, or margin note.
 - Teal `#0F766E` means verified connection or active lineage; burnt coral means uncertainty or emerging change; ochre means context or evidence.
 - The main explorer canvas favors branching diagrams with labeled relationships over a simple timeline or generic card stack.
+- The atlas uses roadmap-style stages as an optional route: orient, narrow, enter work, find capability, see the task, inspect evidence.
+- Roadmap stages are navigational affordances, not claims of an official industry-to-occupation crosswalk; unsupported jumps remain visibly labeled as exploratory.
+- Search is a unified jump tool, while the default experience is click-led wandering through a shared selection state across every visual view.

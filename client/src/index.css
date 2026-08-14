@@ -236,4 +236,68 @@
   @media (max-width: 768px) { .atlas-route { grid-template-columns: 1fr; gap: .75rem; } .route-line { left: 14px; right: auto; top: 0; bottom: 0; height: auto; width: 1px; background: repeating-linear-gradient(0deg,#9bbfb7 0,#9bbfb7 8px,transparent 8px,transparent 15px); } .route-node { display: grid; grid-template-columns: 28px 1fr; column-gap: .75rem; align-items: center; } .route-node .font-display, .route-node .font-mono { grid-column: 2; } .route-node .font-display { margin-top: -22px; } .route-node .font-mono { margin-top: 24px; } }
 }
 
+/* Editorial Cartography amendment: dark surfaces are night-atlas inspection rooms,
+   with coordinates, survey grids, route labels, and evidence-first color semantics. */
+#explore {
+  background-image:
+    linear-gradient(rgba(72, 117, 99, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(72, 117, 99, 0.055) 1px, transparent 1px),
+    radial-gradient(circle at 18% 12%, rgba(62, 135, 116, 0.12), transparent 30%),
+    radial-gradient(circle at 86% 74%, rgba(178, 104, 73, 0.08), transparent 28%);
+  background-size: 48px 48px, 48px 48px, 100% 100%, 100% 100%;
+}
+
+#top > main > section:first-child::before {
+  content: "FIELD 00 / TRACE BEGINS HERE";
+  position: absolute;
+  right: 6%;
+  bottom: 3.5rem;
+  z-index: 1;
+  border-top: 1px solid rgba(15, 118, 110, 0.45);
+  padding-top: 0.55rem;
+  color: #0f766e;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.16em;
+}
+
+#top > main > section:first-child::after {
+  content: "";
+  position: absolute;
+  right: 10%;
+  bottom: 5.25rem;
+  width: 22%;
+  height: 8rem;
+  border-right: 1px solid rgba(15, 118, 110, 0.2);
+  border-bottom: 1px solid rgba(15, 118, 110, 0.2);
+  border-bottom-right-radius: 100%;
+  pointer-events: none;
+}
+
+#sources {
+  background-image:
+    linear-gradient(rgba(210, 225, 215, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(210, 225, 215, 0.045) 1px, transparent 1px);
+  background-size: 42px 42px;
+}
+
+#sources .container::before {
+  content: "ROUTE 06 / SOURCE PACKAGE  →  RELEASE MANIFEST  →  RECORD  →  LINKED VIEW";
+  display: block;
+  margin-bottom: 2.25rem;
+  border-left: 2px solid #d9a2ca;
+  padding-left: 0.75rem;
+  color: #9acdc1;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.14em;
+}
+
+@media (max-width: 640px) {
+  #top > main > section:first-child::before,
+  #top > main > section:first-child::after {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }

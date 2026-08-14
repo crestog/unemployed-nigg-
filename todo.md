@@ -24,3 +24,5 @@
 - [x] Diagnose the Cloudflare Worker/Pages deployment mismatch from the provided build log.
 - [x] Add explicit static-assets deployment configuration for the Cloudflare flow currently being used.
 - [x] Validate and push the deployment fix, then give one exact deployment sequence.
+- [x] Add a roadmap.sh-inspired progression rail with stages, prerequisites, branches, and next-step guidance.
+- [x] Make roadmap selections retarget the same unified canvas and evidence inspector.

@@ -46,3 +46,10 @@
 - [x] Scroll through multiple map regions and test zoom/pan behavior at different viewport positions.
 - [x] Inspect the reference HTML/CSS/JS and map data structure to distinguish reusable interaction ideas from reference-specific content.
 - [x] Build only after the hands-on behavior contract is written and verified.
+- [x] Explore Map of Reddit live across zoom extremes, clicks, search, side panels, and available navigation controls.
+- [x] Inspect Map of Reddit’s public source and rendering model, separating reusable interaction mechanics from Reddit-specific data behavior.
+- [x] Add persistent clicked-node tracking and visual history using only real atlas records.
+- [x] Add file-explorer-style breadcrumb navigation for the current industry, occupation, skill, and task path.
+- [x] Redesign scale semantics so node and label prominence reflects real hierarchy depth and recorded occupation relevance without hiding the world at extreme zoom.
+- [x] Improve map guidance, state feedback, and recovery actions so exploration has a clear next step at every scale.
+- [x] Validate zoom extremes, selection history, breadcrumb jumps, unified search, and the two-tab workflow before pushing.

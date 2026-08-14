@@ -1,0 +1,30 @@
+# Industry Niche Atlas — Completion Rubric and Current-State Audit
+
+## Purpose
+
+The Atlas is **not complete** when it contains a visual graph, a directory, and a set of occupation profiles. It is complete only when a person can use it to move from an uncertain work question to a traceable understanding of a real work domain, a narrow role, its recorded tasks and conditions, adjacent possibilities, and a responsible next action. The application must preserve the difference between a source fact, a transparent calculation, a user-owned note, and a third-party service at every step.
+
+This rubric defines the product bar for the sustained build. It is also an audit of the current release; a partial capability must not be described as satisfying a later gate.
+
+## Completion gates
+
+| Gate | Required outcome | Present status | Evidence and gap |
+|---|---|---|---|
+| **Spatial world** | A deliberately spacious, continuous exploration field where overview shows only meaningful parent regions, nearby records appear with scale, and labels remain legible at extreme zoom. | **Partial** | The Canvas renderer has a large coordinate world, cursor-centred wheel zoom, drag pan, URL camera state, and label collision suppression. However, the initial field is still visually compact, overview renders NAICS codes/levels directly on the map, and selected/visited forced labels can still collide. |
+| **Unbroken descent** | A user can begin with an industry or work theme and follow transparent, authoritative relationships through industry, occupation, work activity, skill, task, and work context. | **Partial** | The Atlas supports industry hierarchy and occupation → skill → task descent. The release correctly refuses to invent a universal NAICS-to-O*NET parent-child link, so it does **not** yet provide a source-backed bridge from an industry branch to occupations. Work activities are stored and shown in Directory but not yet a graph layer. |
+| **Everyday work reality** | A narrow role communicates concrete official task statements, recorded activities, preparation context, and the limits of those records; it does not invent a typical day or employer-specific workflow. | **Partial** | O*NET tasks, skills, activities, preparation facts, related occupations, and BLS employment/wage fields exist. There is no structured work-conditions/activity lens in Roadmaps and no dated work-rhythm source suitable for a claimed daily/weekly allocation. |
+| **Comparative intelligence** | Two real occupations can be compared with published facts and clearly labelled computations: shared/distinct skills and activities, task evidence, preparation differences, and later dated labor context. | **Missing** | The current role page links O*NET-related occupations but has no explicit comparison workspace. It must not call a route easy, best, or likely without an appropriate published transition source. |
+| **Action without false authority** | A user can form a work hypothesis, conduct a bounded experiment, save personal reflection, and reach carefully labelled learning or support handoffs. | **Partial** | Career Lab, the evidence board, ethical task prompt, YouTube search, Filmot handoff, and local-only notes are implemented. The user needs a clearer flow from a comparison or work-activity finding into an experiment and an optional decision review. |
+| **Global architecture** | The code and data contract can add country-specific taxonomies, labor context, multilingual records, and permissioned opportunities without treating all source systems as equivalent. | **Designed, not implemented** | NAICS 2022, ISIC Rev. 5, O*NET, and BLS are shipped. The architecture defines ESCO, ISCO, ILOSTAT, EURES, USAJOBS, and national sources, but no global module is in the current frontend release. |
+| **Evidence integrity** | Every fact, crosswalk, computation, user note, and external handoff is visibly different in UI and data structures; no synthetic jobs, reviews, credentials, or unverified claims appear. | **Partial** | Source badges and a zero-synthetic-record release are present; Roadmaps separates local evidence from O*NET. The formal `EvidenceEnvelope` is specified but not yet adopted by every map/node/comparison record. |
+| **Operational quality** | Real release data loads promptly; interactions work with mouse, keyboard and mobile; map behavior survives panning, zoom extremes, search, and path restoration; production builds and deployed releases are verified. | **Partial** | Type check, production build, and manual local Career Lab validation have passed. Responsive graph behavior, full keyboard operation, all zoom extremes, Cloudflare deployment fingerprinting, and country-module performance remain to be tested after the next major increment. |
+
+## Current architecture constraints that must stay explicit
+
+The existing release uses official O*NET, BLS, NAICS, and ISIC extracts. **Neither NAICS nor ISIC is an authoritative universal parent of an O*NET occupation.** The user’s desired feeling of a descent from an industry to an individual’s work is valid, but the bridge must be represented as either a published crosswalk, a transparent co-occurrence computation, a user-selected lens, or a labelled unknown—not an invented tree edge.
+
+Likewise, an occupation’s task statements describe recorded role content. They do not justify unsupported claims about every hour of a day, every employer, future hiring, an individual’s aptitude, or a user’s employability. The Atlas must make the source scope legible rather than hiding uncertainty behind a smooth diagram.
+
+## Next build gates
+
+The next implementation cycle should satisfy these gates in order: first, a role comparison with a documented O*NET-overlap method; second, a spatial level-of-detail redesign that gives the graph genuine world-scale breathing room; third, an evidence-envelope adapter that carries relation type and caveat into rendered interfaces. These changes will make the present data significantly more useful while research continues on authoritative global sources and permissioned opportunity integrations.

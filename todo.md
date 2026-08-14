@@ -70,10 +70,17 @@
 - [x] Research additional authoritative sources for career pathways, education, credentials, skills, compensation, demand, and regional opportunity.
 - [x] Produce a priority-ranked product and data roadmap that distinguishes verified facts, permitted integrations, and user-specific planning.
 - [x] Implement the highest-value evidence-backed improvement to Roadmaps and verify it across Graph, Roadmaps, and Directory.
-- [ ] Map current Atlas gaps against full career-building journeys: discovery, self-understanding, preparation, practice, proof, application, and transition.
+- [x] Map current Atlas gaps against full career-building journeys: discovery, self-understanding, preparation, practice, proof, application, and transition.
 - [ ] Conduct an in-depth study of career-navigation, learning-path, skills-intelligence, credential, and work-simulation products, including public user discussions and critiques.
 - [ ] Investigate the global ecosystem of authoritative work, education, training, credentials, opportunities, and labor-market data sources with access, licensing, and refresh constraints.
-- [ ] Write a layered intelligence architecture and priority roadmap that separates shipped facts, computed interpretations, user-owned evidence, and permissioned integrations.
+- [x] Write a layered intelligence architecture and priority roadmap that separates shipped facts, computed interpretations, user-owned evidence, and permissioned integrations.
 - [ ] Build and validate the highest-leverage capabilities identified by the sustained research before the next delivery.
-- [ ] Extend the comparative research beyond roadmap.sh to cover career guidance, workforce intelligence, job-search, skills graphs, education, credentials, work simulations, portfolios, communities, and visual knowledge-navigation systems.
+- [x] Extend the comparative research beyond roadmap.sh to cover career guidance, workforce intelligence, job-search, skills graphs, education, credentials, work simulations, portfolios, communities, and visual knowledge-navigation systems.
 - [ ] Capture recurring user praises, complaints, failure modes, and unmet needs across those product categories before selecting the next Atlas capabilities.
+- [x] Define a concrete completion rubric covering world-scale exploration, hierarchy depth, everyday-work evidence, comparative intelligence, learning handoffs, global extensibility, and evidence integrity.
+- [x] Audit every existing Graph, Roadmaps, and Directory interaction against that rubric; label prototype-level gaps rather than presenting partial capabilities as complete.
+- [x] Research and document authoritative global job-taxonomy, skill-graph, labor-market, work-simulation, and opportunity-data systems, including licenses, update cadence, crosswalk feasibility, and local-country limitations.
+- [x] Replace cramped overview behavior with parent-region level-of-detail, child-record reveal, continuous scale semantics, and deterministic label-priority collision control.
+- [x] Build an evidence-only two-occupation comparison workspace with recorded skill/activity overlap, task and preparation differences, primary-source labels, and no suitability ranking.
+- [x] Add a reusable source-contract layer that distinguishes official records, transparent computations, user-owned evidence, and permissioned external opportunity data in both code and interface copy.
+- [ ] Validate each increment on desktop and mobile with real records, zoom extremes, selection routes, search, accessibility checks, production build, GitHub push, and Cloudflare release verification.

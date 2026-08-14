@@ -122,6 +122,46 @@ The first architecture capability now ships inside Roadmaps. A user can choose a
 
 The implementation persists only in the browser’s local storage. It displays a clear local-only disclaimer, keeps O*NET anchor text separate from user prose, does not create a score, and does not represent an artifact as externally verified. The next comparative capability should build on this same boundary: identify recorded overlap and differences between two source occupations, while leaving any judgment about suitability or feasibility to the user and cited sources.
 
+## Verified global classification detail — ESCO, ISCO, and ILOSTAT
+
+The global Atlas must start with classifications and statistical context rather than pretending to have a universal live job map. **ISCO-08** defines an occupation as a set of jobs with highly similar main tasks and duties. Its hierarchy contains 10 major groups, 43 sub-major groups, 130 minor groups, and 436 unit groups; it is also currently under revision. Every imported ISCO record must therefore carry a version and must never be rendered as a current vacancy or an employer-specific role specification.[22]
+
+The European Commission’s **ESCO** is the strongest next structured module because its occupation, skill, and qualification data are available in CSV, RDF, ODS, XML, and JSON-LD across 28 languages. It lists current version 1.2.1 and provides delta files that record version changes. However, the official acquisition flow requires a privacy acknowledgement and email download link, which means it cannot be silently refreshed by the static site.[23] ESCO maps every occupation to exactly one ISCO-08 code; ISCO supplies its first four hierarchy levels and ESCO occupations appear at level five or lower. That supports a mono-hierarchical EU occupation branch, but it does not establish identity between an ESCO occupation and any O*NET record.[24]
+
+**ILOSTAT** should provide country and regional context, not individual predictions. Its data catalogue makes labor-force, employment, unemployment, earnings, skills, occupation (including ISCO level 2), and economic-activity (including ISIC level 2) tables available with national and modeled-estimate series distinguishable.[25] The first importer should therefore ship only a small, declared indicator list and retain geography, period, unit, population/cohort, classification level, source channel, retrieval date, and revision note. Where a country-role measure is absent, the Atlas must leave it absent.
+
+| Module | Source-safe first implementation | Integrity boundary |
+|---|---|---|
+| ISCO world spine | Versioned official hierarchy, definitions, and source URLs in a static release. | A classification is not a directory of every local title, current demand, or work description. |
+| ESCO EU module | Officially acquired release with version, language scope, relation type, and delta baseline preserved. | O*NET/ESCO relations require a published mapping label; similar titles are not enough. |
+| ILOSTAT context lens | Build-time importer for a small stated catalogue of country/region indicators. | National observations and ILO modeled estimates must not be silently combined. |
+
+## Skills graph and comparison research — what Atlas may and may not claim
+
+LinkedIn Career Explorer demonstrates a useful explanatory interaction: it places shared skills between two jobs, role-specific skills toward the relevant side, and exposes “skills to build.” Its similarity score and popularity metric, however, depend on LinkedIn’s Skills Genome and observed member job-history transitions. Atlas must not imitate either value, because the shipped O*NET release does not contain compatible person-history or proprietary skill data.[26]
+
+The appropriate Atlas comparison is consequently an **O*NET evidence overlap**, not a transition prediction. For two selected records, the interface may report exact shared skill labels, source-side and target-side skill labels, exact shared work activities, and the difference in the highest recorded O*NET importance where both records contain a skill. It may separately show preparation facts and task lists. It must display a method note: matching is case-normalized equality within a specific O*NET release, no semantic inference has been made, and task text is not counted as overlap unless an authoritative shared task identifier exists.
+
+Lightcast is valuable as a design reference for maintaining a large commercial taxonomy: it says its skills taxonomy has 34,000+ skills, three-level grouping, frequent updating, job-posting/profile-derived evidence, and API access on request.[27] That makes it unsuitable as a silent static dependency for the free Atlas. It reinforces a policy already needed for O*NET and ESCO: each vocabulary stays native until a licensed, versioned mapping is explicitly shown.
+
+ESCO offers a stronger future public relation model. Its occupational profiles describe relevant knowledge, skills, and competences and distinguish **essential** from **optional** relations; its fifth-and-lower levels can also represent narrower occupation specialisms below an ISCO unit group.[28] The eventual EU module can therefore give the user more deeply structured descent without inventing an industry-to-job hierarchy. It must retain the source relation type and never translate “optional” into “unimportant” or “not required by employers.”
+
+## Work simulation, shadowing, and experience research
+
+Forage demonstrates the **simulation** pattern: an online experience may consist of multiple bounded tasks, an optional work submission, and an example/model answer. Crucially, its own explainer distinguishes a simulation from an internship: simulations are a small, self-paced taste of work, while internships involve an employer-defined schedule and a longer, broader relationship.[29] Atlas may hand users to a relevant simulation or help them plan a self-directed analogue, but must never imply that a local Career Lab experiment is employer-approved, equivalent to an internship, or an Atlas-issued certificate.
+
+Jobs for the Future’s work-based-learning framework gives the Atlas a useful non-linear journey: awareness, exploration, preparation, and experience. It places job shadows, company tours, simulations, and externships in an exploration stage; internships, fellowships, pre-apprenticeships, and service learning in preparation; and registered apprenticeships/on-the-job training in sustained experience. Its quality indicators include access, intentional alignment, financial support, mentorship, pathway integration, and collaboration.[30] This is a much stronger user model than an arbitrary road map, provided the application records practical access constraints rather than promising that every option is available.
+
+Colorado’s public quality guidance makes the design boundary concrete. It defines a job shadow as observing a competent worker’s workday and a job simulation as participating in aspects of an occupation through simulation. It also expects reflection, evidence of learning, clear outcomes, accessibility, and transparent cost; more intensive experiences involve legal, safety, compensation, agreement, and supervision considerations.[31] The next Career Lab iteration should therefore ask users to identify the activity boundary—**information only, observe, simulate, or supervised contribution**—along with expected cost/access and a reflection checkpoint. It must link outward when a real placement or regulated activity requires a provider.
+
+## Large-graph navigation research — density without a hairball
+
+Obsidian’s documented graph controls reinforce the core interaction contract already chosen for Atlas: scroll/keyboard zoom, drag/keyboard pan, hover to reveal connections, selection to open a record, filters, groups, visual display controls, and a separate **local graph** with an explicit depth control.[32] The important pattern is not the force-directed layout itself. It is a stable global-to-local transition: a world view can be broad, but inspection occurs in a bounded neighborhood with a user-controlled depth.
+
+Progressive disclosure provides the product rationale for this structure. The initial graph should expose the few primary actions and regions a user needs, then reveal specialized filters, lasso, scan, trail, comparison, and map styling only when requested. The next level must be visibly reachable and named accurately; advanced capability should not be removed, but should stop competing with initial exploration for attention.[33]
+
+Graph-design guidance identifies the precise current risks: dense networks become unreadable “hairballs,” too many disconnected nodes become “snowstorms,” labels should not be drawn below a readable size, and meaningful grouping/aggregation should expand on demand. It also recommends standard pan/zoom interactions, keyboard support, semantic rather than decorative color, a visible key, and a separate view when a different data question cannot be answered well by one graph.[34] The Atlas redesign therefore needs a parent-region overview with no classification codes on the map surface, cluster summary labels, hierarchical child reveal, deterministic label priority, a local-neighborhood view for a selected role, and a compact advanced-control drawer rather than permanent control clutter.
+
 ## References
 
 [1]: https://www.mynextmove.org/ "My Next Move — U.S. Department of Labor / O*NET"
@@ -145,3 +185,16 @@ The implementation persists only in the browser’s local storage. It displays a
 [19]: https://credentialengine.org/credential-transparency/credential-registry/ "Credential Engine — Credential Registry"
 [20]: https://www.cedefop.europa.eu/en/tools/skills-forecast "Cedefop — Skills Forecast"
 [21]: https://collegescorecard.ed.gov/data/api-documentation/ "U.S. Department of Education — College Scorecard API"
+[22]: https://ilostat.ilo.org/methods/concepts-and-definitions/classification-occupation/ "ILOSTAT — International Standard Classification of Occupations"
+[23]: https://esco.ec.europa.eu/en/use-esco/download "European Commission — ESCO download"
+[24]: https://esco.ec.europa.eu/en/about-esco/escopedia/escopedia/international-standard-classification-occupations-isco "European Commission — ESCO and ISCO"
+[25]: https://ilostat.ilo.org/data/ "ILOSTAT — Indicators and data tools"
+[26]: https://linkedin.github.io/career-explorer/ "LinkedIn — Career Explorer"
+[27]: https://lightcast.io/open-skills "Lightcast — Skills Taxonomy"
+[28]: https://esco.ec.europa.eu/en/about-esco/escopedia/escopedia/occupations-pillar "European Commission — ESCO Occupations Pillar"
+[29]: https://www.theforage.com/blog/basics/virtual-work-experience "Forage — What Is a Virtual Job Simulation?"
+[30]: https://www.jff.org/idea/work-based-learning-framework/the-framework/ "Jobs for the Future — Work-Based Learning Framework"
+[31]: https://dhr.colorado.gov/work-based-learning-quality-expectations "Colorado Department of Labor and Employment — Work-Based Learning Quality Expectations"
+[32]: https://obsidian.md/help/plugins/graph "Obsidian Help — Graph view"
+[33]: https://www.nngroup.com/articles/progressive-disclosure/ "Nielsen Norman Group — Progressive Disclosure"
+[34]: https://cambridge-intelligence.com/blog/designing-intuitive-data-experiences-with-graph-visualizations/ "Cambridge Intelligence — Graph visualization UX"

@@ -6,6 +6,7 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/RealHome";
+import RoleComparisonOverlay from "./components/RoleComparisonOverlay";
 
 
 function Router() {
@@ -31,7 +32,7 @@ function App() {
         defaultTheme="light"
         // switchable
       >
-        <TooltipProvider><Toaster /><Router /></TooltipProvider>
+        <TooltipProvider><Toaster /><Router /><RoleComparisonOverlay /></TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>
   );

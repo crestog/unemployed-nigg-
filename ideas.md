@@ -85,3 +85,6 @@ Use a compact compass-cross mark made from four offset brackets that imply a map
 - Overview cluster rule: each sector field must carry at least one visible coordinate, lineage annotation, or connector fragment—not just a dot and a label.
 - Instrument rule: navigation and layer controls use trace, inspect, and field-language alongside thin ink-rule treatments rather than generic SaaS pills.
 - Overview palette rule: ochre evidence marks and coral unresolved-edge marks recur at world scale so the legend is learned by seeing it, not only by reading it.
+- World-field annotation rule: a visible anchor carries a short connector stub plus an ochre directional field badge; it is a spatial orientation cue rather than an identifier or numeric code.
+- Evidence integrity rule: the overview’s burnt-coral margin note names the real unresolved industry-to-occupation crosswalk boundary, preserving a prominent uncertainty cue without inventing a relationship.
+- Canvas typography rule: record names use IBM Plex Sans for legibility at distance; DM Serif Display remains reserved for atlas titles and wordmark moments; IBM Plex Mono remains an instrument-only face for source, coordinate, and method metadata.

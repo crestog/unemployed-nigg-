@@ -16,7 +16,7 @@ For a personal tool that should open instantly and use almost no laptop resource
 | Run `pnpm data:refresh` locally and deploy the built static site | No external automation or credentials; the laptop must run the refresh and upload step when data changes | Free | Low |
 | Use a notebook environment for the refresh, store the generated JSON in a repository, and let the static host deploy it | Keeps refresh compute off the laptop; notebook sessions are not permanent and need manual or scheduled orchestration | Free tiers vary and may sleep or limit runtime | Moderate to high |
 
-The recommended path is the first row. Cloudflare Pages currently advertises a free plan with unlimited static requests and bandwidth, unlimited sites, and 500 builds per month. GitHub Actions supports scheduled workflows using cron syntax. Treat those limits as current-provider claims and recheck them before relying on a larger public deployment.
+The recommended path is the first row. The exact click-by-click setup is in [`HOSTING.md`](./HOSTING.md). Cloudflare Pages can connect a GitHub repository and automatically deploy on pushes; this project’s Vite configuration writes the static site to `dist/public`, so that is the publish directory to enter. GitHub Actions supports scheduled workflows using cron syntax. Treat provider plan limits as current-provider claims and recheck them before relying on a larger public deployment.
 
 ## Local commands
 

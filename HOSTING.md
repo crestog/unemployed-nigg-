@@ -24,6 +24,19 @@ Use Cloudflare Pages for the main hosted copy. It fits this project because the 
 
 The repository is public and the deployed site is public by default. Do not put API keys, cookies, private research notes, or personal data in the frontend. This release does not require any API key. If the site must be private, keep it local or add an access-control layer before publishing; do not assume that a public GitHub repository plus a public static host is private.
 
+## If Cloudflare opens the Workers screen instead
+
+The repository now includes `wrangler.jsonc` with the static asset directory set to `./dist/public`. If the Cloudflare screen you are using explicitly asks for a **Build command** and a **Deploy command**, use:
+
+| Field | Value |
+| --- | --- |
+| Build command | `pnpm build` |
+| Deploy command | `npx wrangler deploy` |
+| Root directory | `/` |
+| Token / secret variables | None |
+
+Do not add a token manually. The explicit configuration tells Wrangler to deploy the static output from `dist/public` and to serve `index.html` for SPA fallback. The Pages flow remains preferred because it does not require a deploy command, but this Worker-assets fallback matches the screen that may be shown by the Cloudflare dashboard.
+
 ## Alternative: GitHub Pages
 
 GitHub Pages is also free for a public repository, but this repository is a project site rather than a user site. Vite’s official guide says the `base` setting must match the repository path for a project URL.[3] For this repository, that means changing `vite.config.ts` to use `base: "/unemployed-nigg-/"` and adding a Pages deployment workflow that uploads `dist/public`. This is a good alternative if you want to keep hosting entirely inside GitHub, but the base-path change should be tested before merging because it changes asset URLs.
@@ -63,4 +76,3 @@ First confirm that the host is using `dist/public`, not `dist`. Then inspect the
 [2]: https://developers.cloudflare.com/pages/framework-guides/deploy-a-vite3-project/ "Cloudflare Pages Vite deployment guide"
 [3]: https://vite.dev/guide/static-deploy "Vite static deployment guide"
 [4]: https://vercel.com/docs/frameworks/frontend/vite "Vercel Vite documentation"
-

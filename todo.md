@@ -21,3 +21,6 @@
 - [x] Deliver exact setup steps and a prioritized next-level roadmap.
 - [x] Compare free hosting options for a static React site with scheduled data refreshes.
 - [x] Document the recommended hosting path, build settings, domain options, privacy, and rollback steps.
+- [ ] Diagnose the Cloudflare Worker/Pages deployment mismatch from the provided build log.
+- [ ] Add explicit static-assets deployment configuration for the Cloudflare flow currently being used.
+- [ ] Validate and push the deployment fix, then give one exact deployment sequence.

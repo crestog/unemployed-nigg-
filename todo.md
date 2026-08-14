@@ -26,3 +26,6 @@
 - [x] Validate and push the deployment fix, then give one exact deployment sequence.
 - [x] Add a roadmap.sh-inspired progression rail with stages, prerequisites, branches, and next-step guidance.
 - [x] Make roadmap selections retarget the same unified canvas and evidence inspector.
+- [x] Replace the dashboard-like explorer with a full-screen pannable/zoomable real-data canvas and camera-jumping search.
+- [x] Add zoom-dependent labels, cluster focus, layer switching, and a collapsible evidence inspector.
+- [ ] Add lasso selection, hover neighborhoods, and linked brushing across canvas layers.

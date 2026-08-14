@@ -75,3 +75,6 @@ Use a compact compass-cross mark made from four offset brackets that imply a map
 - The atlas uses roadmap-style stages as an optional route: orient, narrow, enter work, find capability, see the task, inspect evidence.
 - Roadmap stages are navigational affordances, not claims of an official industry-to-occupation crosswalk; unsupported jumps remain visibly labeled as exploratory.
 - Search is a unified jump tool, while the default experience is click-led wandering through a shared selection state across every visual view.
+- The primary surface is a full-screen, infinitely pannable/zoomable map; page sections support the map but never compete with it.
+- Labels are scale-dependent: world view exposes clusters, medium zoom exposes record names, and close zoom exposes the inspector and record detail.
+- The inspector is persistent but collapsible, so evidence is always available without shrinking the map into a dashboard card.

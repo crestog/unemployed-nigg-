@@ -29,3 +29,6 @@
 - [x] Replace the dashboard-like explorer with a full-screen pannable/zoomable real-data canvas and camera-jumping search.
 - [x] Add zoom-dependent labels, cluster focus, layer switching, and a collapsible evidence inspector.
 - [ ] Add lasso selection, hover neighborhoods, and linked brushing across canvas layers.
+- [ ] Verify the local checkpoint commit, GitHub main branch, Cloudflare deployment commit, and live HTML fingerprint.
+- [ ] Diagnose any Cloudflare branch, cache, Worker/Pages, or automatic-deploy mismatch.
+- [ ] Fix the deployment path and confirm the live URL serves the infinite-atlas build.

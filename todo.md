@@ -15,3 +15,9 @@
 - [ ] Add ESCO v1.2.1 after the user completes the official download email step, if multilingual skills/occupation coverage is wanted.
 - [ ] Add an authoritative industry-specific BLS OEWS release after the official archive can be refreshed reliably in the chosen hosting environment.
 - [ ] Save a final checkpoint and deliver the website, real-data package, update workflow, and operating instructions.
+- [ ] Inspect the new GitHub repository and compare it with the local project history before pushing.
+- [ ] Push the completed project to the requested GitHub remote without overwriting unrelated content.
+- [ ] Verify the remote branch, commit, workflow files, and deployment-ready build inputs.
+- [ ] Deliver exact setup steps and a prioritized next-level roadmap.
+- [ ] Compare free hosting options for a static React site with scheduled data refreshes.
+- [ ] Document the recommended hosting path, build settings, domain options, privacy, and rollback steps.

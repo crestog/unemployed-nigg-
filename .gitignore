@@ -44,6 +44,7 @@ pids
 *.pid
 *.seed
 *.pid.lock
+data/raw/
 
 # Coverage directory used by tools like istanbul
 coverage/

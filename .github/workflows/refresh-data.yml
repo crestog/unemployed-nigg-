@@ -40,7 +40,6 @@ jobs:
         run: |
           git config user.name "atlas-data-refresh"
           git config user.email "actions@users.noreply.github.com"
-          git add client/public/data data/source-meta
+          git add client/public/data
           git diff --cached --quiet || git commit -m "chore: refresh official data release"
           git push
-

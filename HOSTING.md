@@ -37,6 +37,17 @@ The repository now includes `wrangler.jsonc` with the static asset directory set
 
 Do not add a token manually. The explicit configuration tells Wrangler to deploy the static output from `dist/public` and to serve `index.html` for SPA fallback. The Pages flow remains preferred because it does not require a deploy command, but this Worker-assets fallback matches the screen that may be shown by the Cloudflare dashboard.
 
+## Repository-owned automatic deployment
+
+The repository also includes `.github/workflows/deploy-cloudflare.yml`. This is the reliable path when Cloudflare's dashboard Git connection is stale: every push to `main` builds the site from GitHub and deploys the exact `wrangler.jsonc` configuration. It requires two GitHub Actions secrets, which must be added once by the repository owner:
+
+| GitHub secret | Value |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | A Cloudflare API token with permission to deploy Workers scripts/assets for the account |
+| `CLOUDFLARE_ACCOUNT_ID` | The account ID shown in the Cloudflare dashboard URL or account overview |
+
+Add them at **Repository Settings → Secrets and variables → Actions → New repository secret**. The workflow is intentionally skipped until both secrets exist; no credential is stored in the codebase. After that, a normal `git push` to `main` triggers the build and deployment automatically.
+
 ## Alternative: GitHub Pages
 
 GitHub Pages is also free for a public repository, but this repository is a project site rather than a user site. Vite’s official guide says the `base` setting must match the repository path for a project URL.[3] For this repository, that means changing `vite.config.ts` to use `base: "/unemployed-nigg-/"` and adding a Pages deployment workflow that uploads `dist/public`. This is a good alternative if you want to keep hosting entirely inside GitHub, but the base-path change should be tested before merging because it changes asset URLs.

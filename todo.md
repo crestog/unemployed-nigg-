@@ -32,3 +32,6 @@
 - [ ] Verify the local checkpoint commit, GitHub main branch, Cloudflare deployment commit, and live HTML fingerprint.
 - [ ] Diagnose any Cloudflare branch, cache, Worker/Pages, or automatic-deploy mismatch.
 - [ ] Fix the deployment path and confirm the live URL serves the infinite-atlas build.
+- [ ] Keep all repository changes and pushes credential-free from the sandbox; do not require user sign-in on the sandbox computer.
+- [ ] Make the repository self-contained for Cloudflare automatic deployment and document the exact provider-side connection state.
+- [ ] Recheck the live bundle after the next Cloudflare deployment attempt and report only the minimum remaining user action if it is still stale.

@@ -298,6 +298,44 @@
   #top > main > section:first-child::after {
     display: none;
   }
+
+  #top > header .container {
+    gap: 0.4rem;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  #top > header a[href="#top"] {
+    flex: 0 0 106px;
+    gap: 0.42rem;
+  }
+
+  #top > header a[href="#top"] > span:first-child {
+    height: 2rem;
+    width: 2rem;
+    font-size: 1.3rem;
+  }
+
+  #top > header a[href="#top"] > span:last-child > span {
+    font-size: 0.86rem;
+  }
+
+  #top > header [role="tablist"] {
+    flex: 1 1 auto;
+    justify-content: flex-start;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  #top > header [role="tablist"]::-webkit-scrollbar { display: none; }
+
+  #top > header [role="tab"] {
+    flex: 0 0 auto;
+    padding-left: 0.62rem;
+    padding-right: 0.62rem;
+    white-space: nowrap;
+  }
 }
 
 #atlas-canvas {

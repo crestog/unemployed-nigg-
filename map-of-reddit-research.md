@@ -37,3 +37,7 @@ Selecting the real `Software Developers` O*NET occupation next produced `2 explo
 Clicking the `Software Publishers` breadcrumb restored the saved industry camera, focused branch, selected node, and local action while retaining the two-record exploration count. A subsequent zoom-out retained the active node, its local action, the named immediate child, and the full route chrome; this confirms that selected and visited records are protected from ordinary label suppression as scale changes.
 
 Further low-zoom control testing reduced the route camera to `k=0.698` while the active Software Publishers record, its named immediate child, its local action, the focused-branch indicator, and the two-record history all remained visible. The protected route anchors therefore avoid the previous failure mode in which exploration context disappeared at low scale.
+
+## Atlas interaction expansion validation — 14 August 2026
+
+The Graph now adds a user-controlled `Scan` mode that selects only nodes already visible in the active real-data layer, preserves the route count, updates the active record and hash-based camera state, and can be paused. A live session advanced among official NAICS industry records and produced a restorable local route. The canvas also exposes `Lasso` for pinning real visible records, a `Trail` panel for reviewing recent stops, and clear pin controls. These actions are local exploration aids; they do not manufacture records, classifications, or crosswalks.

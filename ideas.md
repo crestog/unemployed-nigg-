@@ -78,3 +78,7 @@ Use a compact compass-cross mark made from four offset brackets that imply a map
 - The primary surface is a full-screen, infinitely pannable/zoomable map; page sections support the map but never compete with it.
 - Labels are scale-dependent: world view exposes clusters, medium zoom exposes record names, and close zoom exposes the inspector and record detail.
 - The inspector is persistent but collapsible, so evidence is always available without shrinking the map into a dashboard card.
+- World overview rule: no visible cluster is treated as an isolated dot; the overview includes a coordinate, field-guide, lineage, or annotated-connector cue that explains how to begin tracing it.
+- Palette rule: lavender is not a primary data color. Oxidized teal carries verified lineage and active structure; burnt coral signals active selection or unresolved edges; ochre carries evidence and contextual work layers.
+- Copy voice rule: controls use research actions and explain their purpose—for example, “Trace a record path” rather than generic navigation labels.
+- The full-screen graph keeps an explicit field-guide rail at overview scale so evidence and method are visible before a node is selected.

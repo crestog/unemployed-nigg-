@@ -53,3 +53,15 @@
 - [x] Redesign scale semantics so node and label prominence reflects real hierarchy depth and recorded occupation relevance without hiding the world at extreme zoom.
 - [x] Improve map guidance, state feedback, and recovery actions so exploration has a clear next step at every scale.
 - [x] Validate zoom extremes, selection history, breadcrumb jumps, unified search, and the two-tab workflow before pushing.
+- [x] Read and classify the requirements in pasted_content_3.txt for atlas applicability and safety.
+- [x] Implement every compatible requirement from the supplied instructions and document any incompatible items.
+- [x] Validate the resulting atlas behavior before delivery.
+- [x] Research global occupation, industry, skills, and labor-market standards that can expand the atlas beyond the current U.S.-centered release.
+- [x] Identify compliant public APIs, datasets, and partner feeds for global job-market signals without scraping prohibited job-portal content.
+- [x] Add the global data architecture, source provenance, licensing, refresh, and country-coverage plan to the Obsidian-ready upgrade packet.
+- [x] Research permitted ways to connect selected occupations, skills, and tasks to relevant YouTube learning resources, including Filmot feasibility and usage constraints.
+- [x] Define a provenance-first learning-resource experience that prevents an exploration route from ending without a next action.
+- [x] Perform and document a hands-on study of roadmap.sh’s live tabs, interactive roadmap nodes, controls, progress flows, and visual interaction patterns.
+- [x] Inspect roadmap.sh’s public source, roadmap content model, and node-rendering approach without reusing protected roadmap content.
+- [x] Build a standalone Atlas Roadmaps tab that is source-safe, useful on its own, and can accept context from selected Graph records.
+- [x] Add a Graph-to-Roadmaps handoff that opens the Roadmaps tab at a relevant roadmap or transparent external-search path.

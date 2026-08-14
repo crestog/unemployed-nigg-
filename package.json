@@ -9,6 +9,9 @@
     "start": "NODE_ENV=production node dist/index.js",
     "preview": "vite preview --host",
     "check": "tsc --noEmit",
+    "data:download": "python3 scripts/download_real_data.py",
+    "data:build": "python3 scripts/build_real_data.py",
+    "data:refresh": "pnpm data:download && pnpm data:build",
     "format": "prettier --write ."
   },
   "dependencies": {

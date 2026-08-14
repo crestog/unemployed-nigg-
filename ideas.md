@@ -82,3 +82,6 @@ Use a compact compass-cross mark made from four offset brackets that imply a map
 - Palette rule: lavender is not a primary data color. Oxidized teal carries verified lineage and active structure; burnt coral signals active selection or unresolved edges; ochre carries evidence and contextual work layers.
 - Copy voice rule: controls use research actions and explain their purpose—for example, “Trace a record path” rather than generic navigation labels.
 - The full-screen graph keeps an explicit field-guide rail at overview scale so evidence and method are visible before a node is selected.
+- Overview cluster rule: each sector field must carry at least one visible coordinate, lineage annotation, or connector fragment—not just a dot and a label.
+- Instrument rule: navigation and layer controls use trace, inspect, and field-language alongside thin ink-rule treatments rather than generic SaaS pills.
+- Overview palette rule: ochre evidence marks and coral unresolved-edge marks recur at world scale so the legend is learned by seeing it, not only by reading it.

@@ -65,3 +65,8 @@
 - [x] Inspect roadmap.sh’s public source, roadmap content model, and node-rendering approach without reusing protected roadmap content.
 - [x] Build a standalone Atlas Roadmaps tab that is source-safe, useful on its own, and can accept context from selected Graph records.
 - [x] Add a Graph-to-Roadmaps handoff that opens the Roadmaps tab at a relevant roadmap or transparent external-search path.
+- [x] Audit the current Graph, Directory, and Roadmaps experience against practical career-discovery, planning, and action needs.
+- [x] Research comparable career, skills, learning-path, job-market, and labor-market intelligence products for proven interaction patterns.
+- [x] Research additional authoritative sources for career pathways, education, credentials, skills, compensation, demand, and regional opportunity.
+- [x] Produce a priority-ranked product and data roadmap that distinguishes verified facts, permitted integrations, and user-specific planning.
+- [x] Implement the highest-value evidence-backed improvement to Roadmaps and verify it across Graph, Roadmaps, and Directory.

@@ -91,6 +91,7 @@ def clean_number(value):
 
 
 def parse_onet() -> tuple[list[dict], dict]:
+    """Parse only direct O*NET facts; personal readiness and career ladders stay out of the release."""
     archive_path = SOURCES["onet"]["path"]
     with zipfile.ZipFile(archive_path) as archive:
         occupation_rows = list(csv_rows(archive, "occupation_data.csv"))
@@ -118,11 +119,70 @@ def parse_onet() -> tuple[list[dict], dict]:
         for row in csv_rows(archive, "job_titles.csv"):
             titles_by_code[row["O*NET-SOC Code"]].add(row["Job Title"])
 
+        job_zone_by_code: dict[str, dict] = {}
+        for row in csv_rows(archive, "job_zones.csv"):
+            job_zone_by_code[row["O*NET-SOC Code"]] = {"number": clean_number(row["Job Zone"]), "date": row["Date"]}
+
+        zone_reference: dict[int, dict] = {}
+        for row in csv_rows(archive, "job_zone_reference.csv"):
+            for number in re.findall(r"\d+", row["Job Zone"]):
+                zone_reference[int(number)] = {
+                    "label": row["Job Zone"],
+                    "experience": row["Experience"].replace("\n", " ").strip(),
+                    "education": row["Education"].replace("\n", " ").strip(),
+                    "training": row["Job Training"].replace("\n", " ").strip(),
+                }
+
+        education_categories = {
+            row["Category"]: row["Category Description"]
+            for row in csv_rows(archive, "education_categories.csv")
+            if row["Element ID"] == "2.D.1"
+        }
+        education_by_code: dict[str, list[dict]] = defaultdict(list)
+        for row in csv_rows(archive, "education.csv"):
+            if row["Element ID"] != "2.D.1" or row["Scale ID"] != "RL":
+                continue
+            value = clean_number(row["Data Value"])
+            if value is not None:
+                education_by_code[row["O*NET-SOC Code"]].append({"label": education_categories.get(row["Category"], row["Category"]), "share": value, "date": row["Date"]})
+
+        training_categories = {
+            (row["Element ID"], row["Category"]): row["Category Description"]
+            for row in csv_rows(archive, "training_and_experience_categories.csv")
+        }
+        preparation_by_code: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
+        preparation_types = {"3.A.1": "relatedExperience", "3.A.2": "onSiteTraining", "3.A.3": "apprenticeshipTraining"}
+        for row in csv_rows(archive, "training_and_experience.csv"):
+            item_type = preparation_types.get(row["Element ID"])
+            if not item_type:
+                continue
+            value = clean_number(row["Data Value"])
+            if value is not None:
+                preparation_by_code[row["O*NET-SOC Code"]][item_type].append({"label": training_categories.get((row["Element ID"], row["Category"]), row["Category"]), "share": value, "date": row["Date"]})
+
+        related_by_code: dict[str, list[dict]] = defaultdict(list)
+        for row in csv_rows(archive, "related_occupations.csv"):
+            related_by_code[row["O*NET-SOC Code"]].append({
+                "id": row["Related O*NET-SOC Code"],
+                "title": row["Related Title"],
+                "tier": row["Relatedness Tier"],
+                "index": clean_number(row["Index"]),
+            })
+
     occupations = []
     for row in occupation_rows:
         code = row["O*NET-SOC Code"]
         task_rows = tasks_by_code.get(code, [])
         skill_rows = sorted(skills_by_code.get(code, []), key=lambda item: item["importance"] or 0, reverse=True)
+        zone = job_zone_by_code.get(code)
+        zone_number = int(zone["number"]) if zone and zone.get("number") is not None else None
+        preparation = {
+            "jobZone": {**zone, **zone_reference.get(zone_number, {})} if zone and zone_number is not None else None,
+            "reportedEducation": max(education_by_code.get(code, []), key=lambda item: item["share"], default=None),
+            "relatedExperience": max(preparation_by_code.get(code, {}).get("relatedExperience", []), key=lambda item: item["share"], default=None),
+            "onSiteTraining": max(preparation_by_code.get(code, {}).get("onSiteTraining", []), key=lambda item: item["share"], default=None),
+            "apprenticeshipTraining": max(preparation_by_code.get(code, {}).get("apprenticeshipTraining", []), key=lambda item: item["share"], default=None),
+        }
         occupation = {
             "id": code,
             "soc": code.split(".")[0],
@@ -137,6 +197,8 @@ def parse_onet() -> tuple[list[dict], dict]:
                 "softwareCount": len(software_by_code.get(code, set())),
                 "alternateTitleCount": len(titles_by_code.get(code, set())),
             },
+            "preparation": preparation,
+            "relatedOccupations": sorted(related_by_code.get(code, []), key=lambda item: (item["index"] or 999, item["title"]))[:8],
             "tasks": task_rows[:10],
             "skills": skill_rows[:12],
             "workActivities": sorted(activities_by_code.get(code, set()))[:20],
@@ -151,6 +213,7 @@ def parse_onet() -> tuple[list[dict], dict]:
         "taskStatementCount": sum(item["metrics"]["taskCount"] for item in occupations),
         "occupationSkillLinkCount": sum(item["metrics"]["skillCount"] for item in occupations),
         "workActivityLinkCount": sum(item["metrics"]["workActivityCount"] for item in occupations),
+        "relatedOccupationLinkCount": sum(len(item["relatedOccupations"]) for item in occupations),
     }
 
 

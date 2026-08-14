@@ -31,7 +31,7 @@ const money = (value?: number | null) => value == null ? "Not available" : `$${M
 const hash = (value: string) => { let result = 2166136261; for (let index = 0; index < value.length; index += 1) result = Math.imul(result ^ value.charCodeAt(index), 16777619); return result >>> 0; };
 const point = (value: string, radius: number, drift = 0) => { const seed = hash(value); const angle = ((seed % 3600) / 3600) * Math.PI * 2 + drift; const distance = radius * (0.2 + ((seed >>> 8) % 1000) / 1000); return { x: Math.cos(angle) * distance, y: Math.sin(angle) * distance * 0.68 }; };
 const layerName = (layer: Layer) => layer === "industries" ? "Industry world" : layer === "occupations" ? "Occupation world" : layer === "skills" ? "Skill neighborhood" : "Task neighborhood";
-const layerShortName = (layer: Layer) => layer === "industries" ? "Industries" : layer === "occupations" ? "Occupations" : layer === "skills" ? "Skills" : "Tasks";
+const layerShortName = (layer: Layer) => layer === "industries" ? "Industry fields" : layer === "occupations" ? "Role fields" : layer === "skills" ? "Evidence skills" : "Work tasks";
 
 function positionForOccupation(occupation: Occupation): { x: number; y: number } {
   const group = normalize(occupation.skills.slice(0, 2).map((item) => item.name).join(" ")) || "unclassified";
@@ -154,6 +154,20 @@ export default function InfiniteAtlas({ data, onOpenRoadmap }: { data: Release; 
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return; const dpr = window.devicePixelRatio || 1; canvas.width = Math.floor(size.width * dpr); canvas.height = Math.floor(size.height * dpr); canvas.style.width = `${size.width}px`; canvas.style.height = `${size.height}px`; const context = canvas.getContext("2d"); if (!context) return; context.setTransform(dpr, 0, 0, dpr, 0, 0); context.clearRect(0, 0, size.width, size.height); context.fillStyle = "#fbfaf8"; context.fillRect(0, 0, size.width, size.height);
     const grid = clamp(66 * camera.k, 28, 140); context.strokeStyle = "rgba(110,105,93,.07)"; context.lineWidth = 1; const offsetX = ((-camera.x * camera.k + size.width / 2) % grid + grid) % grid; const offsetY = ((-camera.y * camera.k + size.height / 2) % grid + grid) % grid; for (let x = offsetX; x < size.width; x += grid) { context.beginPath(); context.moveTo(x, 0); context.lineTo(x, size.height); context.stroke(); } for (let y = offsetY; y < size.height; y += grid) { context.beginPath(); context.moveTo(0, y); context.lineTo(size.width, y); context.stroke(); }
+    if (layer === "industries" && !focusCode) {
+      const anchors = nodes.filter((node) => node.taxonomy === "NAICS 2022" && node.depth <= 2).filter(nodeVisible);
+      anchors.forEach((node) => {
+        const screen = screenPoint(node);
+        if (screen.x < -100 || screen.x > size.width + 100 || screen.y < -100 || screen.y > size.height + 100) return;
+        const contour = clamp(visualRadius(node) * 2.8, 23, 48);
+        context.beginPath(); context.ellipse(screen.x, screen.y, contour, contour * 0.62, -0.4, 0, Math.PI * 2); context.strokeStyle = "rgba(15,118,110,.16)"; context.lineWidth = 1; context.setLineDash([2, 7]); context.stroke(); context.setLineDash([]);
+        context.fillStyle = "rgba(15,98,91,.72)"; context.font = '10px "IBM Plex Mono", monospace'; context.fillText(`NAICS ${node.code} · L${node.depth}`, screen.x + contour + 4, screen.y - contour * 0.55);
+      });
+      const keyX = Math.max(18, size.width - 244); const keyY = 146;
+      context.fillStyle = "rgba(255,254,251,.9)"; context.fillRect(keyX, keyY, 226, 92); context.strokeStyle = "rgba(183,179,165,.72)"; context.strokeRect(keyX, keyY, 226, 92);
+      context.fillStyle = "#242822"; context.font = '18px "DM Serif Display", Georgia, serif'; context.fillText("Map key", keyX + 14, keyY + 26);
+      [["#0f766e", "verified classification anchor"], ["#ba7a48", "recorded evidence layer"], ["#b95c78", "active or unresolved edge"]].forEach(([color, label], index) => { const y = keyY + 47 + index * 14; context.fillStyle = color; context.fillRect(keyX + 14, y - 7, 6, 6); context.fillStyle = "#6e7069"; context.font = '9px "IBM Plex Mono", monospace'; context.fillText(label, keyX + 28, y); });
+    }
     if (layer === "industries" && focusCode && selected) { const parent = screenPoint(selected); context.strokeStyle = "rgba(15,118,110,.32)"; context.lineWidth = clamp(1.6 / Math.sqrt(camera.k), 0.5, 1.6); nodes.filter((node) => node.code?.startsWith(focusCode) && node.code !== focusCode && node.depth <= selected.depth + 1 && nodeVisible(node)).slice(0, 180).forEach((node) => { const child = screenPoint(node); context.beginPath(); context.moveTo(parent.x, parent.y); context.lineTo(child.x, child.y); context.stroke(); }); }
     if ((layer === "skills" || layer === "tasks") && currentOccupation) { const center = screenPoint(makeOccupationNode(currentOccupation)); context.strokeStyle = "rgba(47,131,126,.17)"; context.lineWidth = clamp(1.4 / Math.sqrt(camera.k), 0.45, 1.4); nodes.forEach((node) => { const child = screenPoint(node); context.beginPath(); context.moveTo(center.x, center.y); context.lineTo(child.x, child.y); context.stroke(); }); }
     nodes.filter((node) => pinned.has(node.key)).forEach((node) => { const screen = screenPoint(node); const radius = visualRadius(node) + 5; context.beginPath(); context.arc(screen.x, screen.y, radius, 0, Math.PI * 2); context.strokeStyle = "#ba7a48"; context.lineWidth = 2; context.setLineDash([3, 3]); context.stroke(); context.setLineDash([]); });

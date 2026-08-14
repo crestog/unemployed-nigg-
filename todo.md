@@ -35,3 +35,14 @@
 - [ ] Keep all repository changes and pushes credential-free from the sandbox; do not require user sign-in on the sandbox computer.
 - [ ] Make the repository self-contained for Cloudflare automatic deployment and document the exact provider-side connection state.
 - [ ] Recheck the live bundle after the next Cloudflare deployment attempt and report only the minimum remaining user action if it is still stale.
+- [x] Inspect Every Noise directly and record its zoom, clustering, label, and navigation behavior as the target interaction contract.
+- [x] Replace the current crowded DOM graph with a map-scale level-of-detail renderer that keeps the full real-data world navigable.
+- [x] Remove default numeric labels and overlap-prone text; show names only at appropriate zoom thresholds with collision-aware placement.
+- [x] Make node size, label size, and visible density respond continuously to camera zoom, with cursor-centered zoom and page-scroll isolation.
+- [x] Implement click-to-descend from industry nodes through official children and then into defensible occupation/skill/task records.
+- [x] Fix unified search to return any real record and animate the camera to its true world position while preserving the selected path.
+- [x] Click multiple Every Noise genre nodes and record the exact selection, sound-preview, URL, and focus behavior.
+- [x] Exercise Every Noise scan, list, playlist, book, and more controls; inspect their state changes and escape routes.
+- [x] Scroll through multiple map regions and test zoom/pan behavior at different viewport positions.
+- [x] Inspect the reference HTML/CSS/JS and map data structure to distinguish reusable interaction ideas from reference-specific content.
+- [x] Build only after the hands-on behavior contract is written and verified.

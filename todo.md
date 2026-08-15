@@ -91,3 +91,14 @@
 - [x] Extend the role comparison workspace with international classification context and BLS outlook evidence while retaining no-fit and no-transition-score limits.
 - [x] Stop map pan, wheel zoom, and lasso selection when the pointer is over the inspector, search, breadcrumbs, field guide, controls, drawer, or any text-selectable overlay.
 - [x] Validate text selection, scrolling, links, buttons, and form fields over the map at desktop and mobile breakpoints before the next release.
+- [x] Inspect the supplied Startup In Up reference bundle and document which interaction, taxonomy, geography, and data claims are reusable versus unsupported.
+- [x] Define the Global Venture Atlas ontology: registered business, operating business, startup, scaleup, nonprofit, public institution, directory listing, policy record, and evidence of status.
+- [x] Build a country-by-country source ledger for official business registers, open-data catalogs, legal-entity identifiers, startup ecosystems, and policy portals; record license, geography, cadence, record count, and acquisition method.
+- [x] Research compliant alternatives to indiscriminate scraping, prioritizing official APIs, open bulk downloads, consented datasets, and source-hosted outbound handoffs.
+- [x] Separate global coverage assertions from country-specific pilot coverage; never label a map as all businesses or all startups when a source is partial, delayed, or inaccessible.
+- [x] Design a geography contract that distinguishes headquarters, registered address, operating location, jurisdiction, country, state/province, district, and unknown location.
+- [x] Establish a policy-evidence model that links a policy to jurisdiction, authority, effective date, source URL, affected entity type, and confidence rather than inferring regulatory effects.
+- [x] Select one reproducible multi-jurisdiction pilot with real permitted data and map only verified geographic records with visible provenance, timestamp, and coverage boundaries.
+- [x] Preserve the current Atlas’s progressive drill-down, search, breadcrumb, and evidence-inspector interaction model when adding the world map rather than replacing it with a generic dashboard.
+- [x] Design world-map layers as explicitly switchable legal-entity reference, startup/programme listing, operating-location, and policy evidence surfaces; never merge their pins or counts by default.
+- [x] Optimize the first global module for the user’s own research workflows while maintaining public-facing source, coverage, accessibility, and privacy controls for a later broader audience.

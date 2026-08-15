@@ -162,6 +162,24 @@ Progressive disclosure provides the product rationale for this structure. The in
 
 Graph-design guidance identifies the precise current risks: dense networks become unreadable “hairballs,” too many disconnected nodes become “snowstorms,” labels should not be drawn below a readable size, and meaningful grouping/aggregation should expand on demand. It also recommends standard pan/zoom interactions, keyboard support, semantic rather than decorative color, a visible key, and a separate view when a different data question cannot be answered well by one graph.[34] The Atlas redesign therefore needs a parent-region overview with no classification codes on the map surface, cluster summary labels, hierarchical child reveal, deterministic label priority, a local-neighborhood view for a selected role, and a compact advanced-control drawer rather than permanent control clutter.
 
+## Verified connector and outlook implementation constraints
+
+### Opportunity handoffs: external search, never copied vacancy inventory
+
+USAJOBS’ official developer portal documents dynamic search, RSS, exports, and REST services, while the official OPM developer page identifies the USAJOBS open-public-jobs service as a federal opportunity-distribution channel.[35] The ordinary USAJOBS search page accepts a role keyword in its public `k` query parameter. The static Atlas can therefore create a direct, source-labelled **“Search USAJOBS for this role”** handoff using the current occupation title. It must not show a count, cached listing card, application state, or apparent real-time availability unless a future credentialed API connector supplies and timestamps that information.[36]
+
+EURES’ public jobseeker service covers 31 EURES countries and provides an official externally hosted job search, adviser support, country information, and European Job Days. Its vacancy-insights page also makes clear that its country/occupation/skill dashboards are separate aggregated labour-market intelligence, not the same thing as individual vacancies.[37] The external EURES application did not expose a stable queryable route in this browser session, so the safe first handoff is an explicit **“Copy this role title for EURES”** control plus the official job-search link. The interface must say that the user chooses country, work authorization, language, and filters on EURES itself.
+
+### International module: static ISCO spine plus live, version-pinned ESCO lookup
+
+The ILO makes ISCO-08 structure/definition files available in XLSX and CSV, and describes its four levels and 436 unit groups. It also states that ISCO-08 is under revision. The Atlas can legally ship a compact, version-labelled ISCO-08 hierarchy as an international classification context, but it must never call it a current job listing, a national occupational standard, or a mapping to O*NET.[38]
+
+The ESCO web-service documentation states that applications can request terms/concepts and select a version. Its current hosted API offers v1.0.9 by default and v1.1.2/v1.2.0 as explicitly selectable releases, while the download page lists v1.2.1 as the newer, email-confirmed downloadable dataset. A live browser probe of the official service returned 66 English occupation results for “accountant” at `v1.2.0`. Therefore the initial Atlas module may use **on-demand ESCO v1.2.0 lookup** with response-level error/unavailable states, preserve the URI/language/version, and point to the official v1.2.1 download path rather than falsely treating v1.2.0 as current.[39]
+
+### BLS outlook: compare dated national projection context, not a personal future
+
+The BLS 2024–34 Occupational Projections table provides National Employment Matrix title/code, base and projected employment, numeric/percent change, annual openings, education/training, and 2024 wage fields. BLS publishes an O*NET-SOC-to-Matrix/OOH crosswalk and warns that long-term projections contain inherent uncertainty; it recommends emphasizing direction and relative size rather than a spurious precise forecast.[40] The Atlas can join only published crosswalk matches, retain the full `2024–34` vintage and 2025 release date, show unmatched O*NET roles as unavailable, and label every figure as a **U.S. national employment projection**, not a local hiring forecast or user outcome.
+
 ## References
 
 [1]: https://www.mynextmove.org/ "My Next Move — U.S. Department of Labor / O*NET"
@@ -198,3 +216,9 @@ Graph-design guidance identifies the precise current risks: dense networks becom
 [32]: https://obsidian.md/help/plugins/graph "Obsidian Help — Graph view"
 [33]: https://www.nngroup.com/articles/progressive-disclosure/ "Nielsen Norman Group — Progressive Disclosure"
 [34]: https://cambridge-intelligence.com/blog/designing-intuitive-data-experiences-with-graph-visualizations/ "Cambridge Intelligence — Graph visualization UX"
+[35]: https://developer.usajobs.gov/ "USAJOBS Developer Portal" 
+[36]: https://www.usajobs.gov/Search/Results "USAJOBS — Official job search"
+[37]: https://eures.europa.eu/jobseekers_en "EURES — Jobseekers" 
+[38]: https://ilostat.ilo.org/methods/concepts-and-definitions/classification-occupation/ "ILOSTAT — ISCO classification"
+[39]: https://esco.ec.europa.eu/en/use-esco/use-esco-services-api/esco-web-service-api "European Commission — ESCO web-service API"
+[40]: https://www.bls.gov/emp/tables/occupational-projections-and-characteristics.htm "U.S. BLS — Occupational projections and worker characteristics, 2024–34"

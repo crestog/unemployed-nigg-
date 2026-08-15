@@ -43,6 +43,14 @@ SOURCES = {
         "url": "https://www.bls.gov/oes/tables.htm",
         "license": "U.S. government public data; verify source notes before redistribution",
     },
+    "blsProjections": {
+        "path": RAW / "bls_ep_2024_2034_occupation.xlsx",
+        "publisher": "U.S. Bureau of Labor Statistics",
+        "title": "Occupational projections and worker characteristics, 2024–2034",
+        "vintage": "2024–2034 (released 2025-08-28)",
+        "url": "https://www.bls.gov/emp/tables/occupational-projections-and-characteristics.htm",
+        "license": "U.S. government public data; projections are national estimates with documented uncertainty",
+    },
     "naics": {
         "path": RAW / "naics_2022_structure.xlsx",
         "publisher": "U.S. Census Bureau",
@@ -58,6 +66,14 @@ SOURCES = {
         "vintage": "Rev. 5",
         "url": "https://unstats.un.org/unsd/classifications/Econ/isic",
         "license": "UN source; retain attribution and source terms",
+    },
+    "isco": {
+        "path": RAW / "isco_08_structure.xlsx",
+        "publisher": "International Labour Organization / ILOSTAT",
+        "title": "ISCO-08 Structure and Definitions",
+        "vintage": "ISCO-08",
+        "url": "https://ilostat.ilo.org/methods/concepts-and-definitions/classification-occupation/",
+        "license": "Free to use without prior authorization; retain source attribution",
     },
 }
 
@@ -245,6 +261,32 @@ def parse_bls() -> dict[str, dict]:
         return result
 
 
+def parse_bls_projections() -> dict[str, dict]:
+    """Return published detailed National Employment Matrix records keyed by exact SOC code."""
+    workbook = openpyxl.load_workbook(SOURCES["blsProjections"]["path"], read_only=True, data_only=True)
+    sheet = workbook["Table 1.2"]
+    rows = sheet.iter_rows(values_only=True)
+    next(rows)  # table title
+    header = next(rows)
+    index = {str(value): position for position, value in enumerate(header) if value is not None}
+    result: dict[str, dict] = {}
+    for row in rows:
+        code = code_as_string(row[index["2024 National Employment Matrix code"]])
+        kind = code_as_string(row[index["Occupation type"]])
+        if not re.fullmatch(r"\d{2}-\d{4}", code) or kind != "Line item":
+            continue
+        result[code] = {
+            "title": code_as_string(row[index["2024 National Employment Matrix title"]]).strip(),
+            "employment2024Thousands": clean_number(row[index["Employment, 2024"]]),
+            "employment2034Thousands": clean_number(row[index["Employment, 2034"]]),
+            "changeThousands": clean_number(row[index["Employment change, numeric, 2024–34"]]),
+            "changePercent": clean_number(row[index["Employment change, percent, 2024–34"]]),
+            "annualOpeningsThousands": clean_number(row[index["Occupational openings, 2024–34 annual average"]]),
+            "source": {"id": "bls-ep", "publisher": SOURCES["blsProjections"]["publisher"], "vintage": SOURCES["blsProjections"]["vintage"], "url": SOURCES["blsProjections"]["url"]},
+        }
+    return result
+
+
 def code_as_string(value) -> str:
     if value is None:
         return ""
@@ -284,6 +326,27 @@ def parse_isic() -> list[dict]:
     return items
 
 
+def parse_isco() -> list[dict]:
+    workbook = openpyxl.load_workbook(SOURCES["isco"]["path"], read_only=True, data_only=True)
+    sheet = workbook["ISCO-08 EN Struct and defin"]
+    rows = sheet.iter_rows(values_only=True)
+    header = next(rows)
+    index = {str(value): position for position, value in enumerate(header) if value is not None}
+    items = []
+    for row in rows:
+        code = code_as_string(row[index["ISCO 08 Code"]])
+        title = code_as_string(row[index["Title EN"]]).strip()
+        level = clean_number(row[index["Level"]])
+        if not code or not title or level not in {1, 2, 3, 4} or not re.fullmatch(r"\d{1,4}", code):
+            continue
+        items.append({
+            "id": f"isco:{code}", "code": code, "title": title, "level": int(level), "taxonomy": "ISCO-08",
+            "definition": code_as_string(row[index["Definition"]]).replace("\n", " ").strip(),
+            "source": {"id": "isco", "publisher": SOURCES["isco"]["publisher"], "vintage": SOURCES["isco"]["vintage"], "url": SOURCES["isco"]["url"]},
+        })
+    return items
+
+
 def main() -> None:
     missing = [key for key, source in SOURCES.items() if not source["path"].exists()]
     if missing:
@@ -291,18 +354,24 @@ def main() -> None:
 
     occupations, onet_counts = parse_onet()
     bls = parse_bls()
+    projections = parse_bls_projections()
     for occupation in occupations:
         occupation["laborMarket"] = bls.get(occupation["soc"])
+        occupation["outlook"] = projections.get(occupation["soc"])
 
     naics = parse_naics()
     isic = parse_isic()
-    taxonomies = naics + isic
+    isco = parse_isco()
+    taxonomies = naics + isic + isco
     counts = {
         "naics": len(naics),
         "isic": len(isic),
+        "isco": len(isco),
         "occupations": len(occupations),
         "occupationsWithBls": sum(1 for item in occupations if item["laborMarket"]),
+        "occupationsWithBlsProjections": sum(1 for item in occupations if item["outlook"]),
         "blsDetailedRecords": len(bls),
+        "blsProjectionDetailedRecords": len(projections),
     }
     release_id = datetime.now(timezone.utc).strftime("%Y%m%d")
     source_meta = []
@@ -311,12 +380,24 @@ def main() -> None:
 
     write_json("occupations.json", occupations)
     write_json("taxonomies.json", taxonomies)
+    write_json("international.json", {
+        "module": "international-classifications",
+        "isco": {"records": isco, "source": {key: value for key, value in SOURCES["isco"].items() if key != "path"}},
+        "esco": {
+            "mode": "official-web-service-lookup",
+            "selectedVersion": "v1.2.0",
+            "language": "en",
+            "api": "https://ec.europa.eu/esco/api/search",
+            "source": {"id": "esco", "publisher": "European Commission", "vintage": "v1.2.0 web service; v1.2.1 downloadable release available separately", "url": "https://esco.ec.europa.eu/en/use-esco/use-esco-services-api/esco-web-service-api"},
+            "integrity": "Live ESCO search results are suggestions from a separate vocabulary; they are not an O*NET-to-ESCO mapping.",
+        },
+    })
     write_json("manifest.json", {
         "releaseId": release_id,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "mode": "real-source-release",
         "counts": {**counts, **onet_counts},
-        "collections": {"occupations": "occupations.json", "taxonomies": "taxonomies.json"},
+        "collections": {"occupations": "occupations.json", "taxonomies": "taxonomies.json", "international": "international.json"},
         "sources": source_meta,
         "integrity": {"syntheticRecords": 0, "unresolvedIndustryOccupationCrosswalk": True, "workRhythmData": "not included; source-backed task/activity data only"},
     })

@@ -84,3 +84,10 @@
 - [x] Build an evidence-only two-occupation comparison workspace with recorded skill/activity overlap, task and preparation differences, primary-source labels, and no suitability ranking.
 - [x] Add a reusable source-contract layer that distinguishes official records, transparent computations, user-owned evidence, and permissioned external opportunity data in both code and interface copy.
 - [ ] Validate each increment on desktop and mobile with real records, zoom extremes, selection routes, search, accessibility checks, production build, GitHub push, and Cloudflare release verification.
+- [x] Verify USAJOBS and EURES official handoff options, permitted query parameters, user-facing country/eligibility limits, attribution, and non-scraping boundaries.
+- [x] Add source-labelled external opportunity handoffs that pass an occupation title and never present third-party listings as Atlas records.
+- [ ] Acquire and normalize public ESCO and ISCO modules using their documented distributions, preserve releases and languages, and keep mappings visibly separate from O*NET records. The versioned ISCO-08 spine ships; ESCO v1.2.0 has an explicit official-service lookup and unavailable state, while a downloadable, multilingual v1.2.1 snapshot still requires its email-confirmed acquisition flow.
+- [x] Acquire a dated official BLS employment-projections release, validate SOC coverage and vintage, and expose only recorded baseline/projection fields in comparison.
+- [x] Extend the role comparison workspace with international classification context and BLS outlook evidence while retaining no-fit and no-transition-score limits.
+- [x] Stop map pan, wheel zoom, and lasso selection when the pointer is over the inspector, search, breadcrumbs, field guide, controls, drawer, or any text-selectable overlay.
+- [x] Validate text selection, scrolling, links, buttons, and form fields over the map at desktop and mobile breakpoints before the next release.

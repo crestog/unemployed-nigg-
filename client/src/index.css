@@ -343,4 +343,13 @@
   overscroll-behavior: contain;
 }
 
+/* World precision mode keeps Google imagery as visual context, while Atlas owns the
+   interaction chrome. Required attribution remains visible; only competing controls hide. */
+.atlas-precision-map .gm-style-mtc-bbw,
+.atlas-precision-map .gm-fullscreen-control,
+.atlas-precision-map .gm-svpc,
+.atlas-precision-map .gm-bundled-control {
+  display: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }

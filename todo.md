@@ -102,3 +102,16 @@
 - [x] Preserve the current Atlas’s progressive drill-down, search, breadcrumb, and evidence-inspector interaction model when adding the world map rather than replacing it with a generic dashboard.
 - [x] Design world-map layers as explicitly switchable legal-entity reference, startup/programme listing, operating-location, and policy evidence surfaces; never merge their pins or counts by default.
 - [x] Optimize the first global module for the user’s own research workflows while maintaining public-facing source, coverage, accessibility, and privacy controls for a later broader audience.
+- [ ] Audit why World overlay text becomes selectable during map drag and ensure only deliberate text selection inside a focused inspector is possible.
+- [ ] Implement cursor-centred continuous World zoom with a wider scale range, no document scroll leakage, and stable camera persistence in the route.
+- [ ] Keep World search, field guide, breadcrumbs, layer controls, map tools, and inspector spatially fixed while only the geographic surface transforms.
+- [ ] Research and select authoritative, reuse-permitted country, state/province, district, city, and locality geography sources; record topology version, resolution, identifiers, and country-specific coverage limits.
+- [ ] Define progressive geographic levels and source gates: world and country always separate; subnational and locality fields appear only where an official or permissioned layer is available.
+- [ ] Add a real subnational pilot with published administrative geometry and a source-labelled drill-down path, without generating arbitrary city or district pins.
+- [ ] Define a permissioned entity-ingestion contract that records source, original URL, acquisition method, legal status, geography precision, timestamp, and confidence for future business/startup imports.
+- [ ] Never use indiscriminate scraping to claim full global business/startup coverage; preserve publisher terms, rate limits, opt-outs, and partial-coverage disclosures in every entity layer.
+- [ ] Audit the current Natural Earth/world-atlas, geoBoundaries, and GeoNames layers against the requested Google Earth-level precision and remove any wording that could imply equivalent imagery, terrain, or address precision.
+- [ ] Research legally usable high-resolution satellite/terrain basemap options, vector-tile providers, and self-hosted open-data alternatives; record attribution, API-key, caching, rate, coverage, privacy, and cost implications.
+- [ ] Define visible precision tiers for visual basemap context, country boundary, ADM1, ADM2, locality reference, and source-provided entity coordinates.
+- [ ] Add only a licensed or user-authorized high-detail basemap after its performance and source terms are verified; retain a no-key, geometry-only fallback.
+- [ ] Present coordinates, boundaries, and entity markers with their actual source precision and timestamp; never imply Google Earth imagery, geocoding, or accuracy where it is not supplied.

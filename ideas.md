@@ -88,3 +88,6 @@ Use a compact compass-cross mark made from four offset brackets that imply a map
 - World-field annotation rule: a visible anchor carries a short connector stub plus an ochre directional field badge; it is a spatial orientation cue rather than an identifier or numeric code.
 - Evidence integrity rule: the overview’s burnt-coral margin note names the real unresolved industry-to-occupation crosswalk boundary, preserving a prominent uncertainty cue without inventing a relationship.
 - Canvas typography rule: record names use IBM Plex Sans for legibility at distance; DM Serif Display remains reserved for atlas titles and wordmark moments; IBM Plex Mono remains an instrument-only face for source, coordinate, and method metadata.
+- Overview composition rule: the Graph reads as a three-part research desk from first render—orientation rail, spatial map field, and a durable evidence/method surface.
+- Typographic hierarchy rule: explanatory notes and controls use IBM Plex Sans; monospace is reserved for coordinates, source identifiers, release metadata, and instrument readouts.
+- Route-cue rule: each major verified teal field marker at overview scale is paired with a visible connector fragment, lineage label, coordinate badge, or evidence/context mark.

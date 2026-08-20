@@ -91,22 +91,32 @@ const FORGE_BASE_URL =
   import.meta.env.VITE_FRONTEND_FORGE_API_URL ||
   "https://forge.butterfly-effect.dev";
 const MAPS_PROXY_URL = `${FORGE_BASE_URL}/v1/maps/proxy`;
+let mapsScriptPromise: Promise<boolean> | null = null;
 
-function loadMapScript() {
-  return new Promise(resolve => {
+function loadMapScript(): Promise<boolean> {
+  if (window.google?.maps) return Promise.resolve(true);
+  if (mapsScriptPromise) return mapsScriptPromise;
+  const pending = new Promise<boolean>((resolve) => {
     const script = document.createElement("script");
+    let settled = false;
+    const finish = (available: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve(available && Boolean(window.google?.maps));
+    };
+    const timeout = window.setTimeout(() => finish(false), 8000);
     script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry`;
     script.async = true;
-    script.crossOrigin = "anonymous";
-    script.onload = () => {
-      resolve(null);
-      script.remove(); // Clean up immediately
-    };
-    script.onerror = () => {
-      console.error("Failed to load Google Maps script");
-    };
+    script.onload = () => finish(true);
+    script.onerror = () => finish(false);
     document.head.appendChild(script);
+  }).then((available) => {
+    if (!available) mapsScriptPromise = null;
+    return available;
   });
+  mapsScriptPromise = pending;
+  return pending;
 }
 
 interface MapViewProps {
@@ -115,6 +125,7 @@ interface MapViewProps {
   initialZoom?: number;
   options?: google.maps.MapOptions;
   onMapReady?: (map: google.maps.Map) => void;
+  onMapUnavailable?: () => void;
 }
 
 export function MapView({
@@ -123,28 +134,35 @@ export function MapView({
   initialZoom = 12,
   options,
   onMapReady,
+  onMapUnavailable,
 }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<google.maps.Map | null>(null);
 
   const init = usePersistFn(async () => {
-    await loadMapScript();
+    const available = await loadMapScript();
+    if (!available || !window.google?.maps) {
+      onMapUnavailable?.();
+      return;
+    }
     if (!mapContainer.current) {
       console.error("Map container not found");
       return;
     }
-    map.current = new window.google.maps.Map(mapContainer.current, {
-      zoom: initialZoom,
-      center: initialCenter,
-      mapTypeControl: true,
-      fullscreenControl: true,
-      zoomControl: true,
-      streetViewControl: true,
-      mapId: "DEMO_MAP_ID",
-      ...options,
-    });
-    if (onMapReady) {
-      onMapReady(map.current);
+    try {
+      map.current = new window.google.maps.Map(mapContainer.current, {
+        zoom: initialZoom,
+        center: initialCenter,
+        mapTypeControl: true,
+        fullscreenControl: true,
+        zoomControl: true,
+        streetViewControl: true,
+        mapId: "DEMO_MAP_ID",
+        ...options,
+      });
+      onMapReady?.(map.current);
+    } catch {
+      onMapUnavailable?.();
     }
   });
 

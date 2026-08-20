@@ -122,3 +122,9 @@
 - [x] Define an evidence-led roadmap authoring contract for user-provided goals: source-backed steps, resource provenance, explicit assumptions, editable user evidence, and no invented credential or career-outcome claims.
 - [x] Prototype a local, permissioned entity-import workflow for user-held Uttar Pradesh, Estonia, and Singapore startup/business datasets that validates source URL, acquisition method, access date, category, status basis, geography precision, and coordinate provenance before placing map pins.
 - [x] Validate World cursor-centred wheel zoom, precision-mode pan, and high-zoom locality behavior in the browser; distinguish continuous interface zoom from the finite native tile-resolution ceiling.
+- [x] Reproduce and diagnose the public Worker’s intermittent or blank satellite-precision map surface; provide a geometry-map fallback that remains usable when third-party imagery is unavailable.
+- [x] Replace generic directional graph annotations such as “north field · west grid” with useful, source-relevant route cues or suppress them where they add no exploratory value.
+- [x] Audit every Graph, World, Roadmaps, Directory, inspector, search, and import interaction at a mobile viewport; replace hover-only, clipped, and desktop-only controls with reachable touch equivalents.
+- [x] Establish an Atlas mobile interaction contract: one-finger pan, cursor-equivalent pinch/wheel zoom, non-overlapping bottom sheets, visible close/back actions, and usable source inspection.
+- [x] Locate the previously collected Estonia startup dataset and audit its provenance, source terms, category/status basis, coordinate origin, timestamp, and reusable-display eligibility before integrating any rows.
+- [ ] Integrate only verified, display-permitted Estonia startup records as a clearly separate source layer with row-level provenance and coverage limits; keep any incomplete records aggregate-only or excluded.

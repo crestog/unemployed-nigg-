@@ -91,3 +91,6 @@ Use a compact compass-cross mark made from four offset brackets that imply a map
 - Overview composition rule: the Graph reads as a three-part research desk from first render—orientation rail, spatial map field, and a durable evidence/method surface.
 - Typographic hierarchy rule: explanatory notes and controls use IBM Plex Sans; monospace is reserved for coordinates, source identifiers, release metadata, and instrument readouts.
 - Route-cue rule: each major verified teal field marker at overview scale is paired with a visible connector fragment, lineage label, coordinate badge, or evidence/context mark.
+- Annotation usefulness rule: directional filler such as “north field · west grid” is removed; overview cues must instead state a real source relationship, a formal classification level, or an evidence boundary.
+- Mobile atlas rule: phone navigation is a horizontally reachable tab strip; search and layer actions live in a single bottom dock; guidance opens only on demand as a bottom sheet and must never cover the active touch target.
+- Map resilience rule: provider imagery is optional visual context. If it cannot initialize, Atlas automatically returns to the source-labelled geometry map and explains that no Atlas data were lost.

@@ -300,9 +300,13 @@
   }
 
   #top > header .container {
-    gap: 0.4rem;
+    min-height: 0;
+    flex-wrap: wrap;
+    gap: 0.45rem;
     padding-left: 0.75rem;
     padding-right: 0.75rem;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
   }
 
   #top > header a[href="#top"] {
@@ -321,9 +325,11 @@
   }
 
   #top > header [role="tablist"] {
-    flex: 1 1 auto;
-    justify-content: flex-start;
-    min-width: 0;
+    order: 3;
+    flex: 1 0 100%;
+    width: 100%;
+    justify-content: space-between;
+    min-width: 100%;
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -331,10 +337,66 @@
   #top > header [role="tablist"]::-webkit-scrollbar { display: none; }
 
   #top > header [role="tab"] {
-    flex: 0 0 auto;
-    padding-left: 0.62rem;
-    padding-right: 0.62rem;
+    flex: 1 0 auto;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+    text-align: center;
     white-space: nowrap;
+  }
+
+  #atlas-canvas {
+    height: calc(100dvh - 112px) !important;
+    min-height: 620px !important;
+  }
+
+  #atlas-canvas > .absolute.left-4.right-4.top-4 {
+    left: 0.75rem;
+    right: 0.75rem;
+    top: 0.75rem;
+  }
+
+  #atlas-canvas > .absolute.left-4.right-4.top-4 > div:first-child {
+    max-width: calc(100% - 86px);
+  }
+
+  #atlas-canvas > .absolute.left-4.right-4.top-4 > div:last-child {
+    position: absolute;
+    right: 0;
+    top: 0;
+    gap: 0.35rem;
+  }
+
+  #atlas-canvas > .absolute.bottom-5.left-5 {
+    bottom: 0.75rem;
+    left: 0.75rem;
+    width: calc(100% - 1.5rem);
+  }
+
+  [data-venture-overlay].absolute.bottom-4.left-4 {
+    bottom: 0.75rem;
+    left: 0.75rem;
+    width: calc(100vw - 5.8rem);
+  }
+
+  [data-venture-overlay].absolute.bottom-4.right-4 {
+    bottom: 0.75rem;
+    right: 0.75rem;
+  }
+
+  [data-venture-overlay].absolute.left-4.top-4 {
+    left: 0.75rem;
+    right: 0.75rem;
+    max-width: none;
+  }
+
+  [data-venture-overlay].absolute.left-4.top-4 > div:first-child {
+    max-width: 100%;
+  }
+
+  [data-venture-overlay] [role="tablist"] {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 }
 

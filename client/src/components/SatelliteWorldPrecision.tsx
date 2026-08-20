@@ -46,7 +46,7 @@ export function countryCentroid(id: string): PrecisionView | null {
   return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng, zoom: id === "356" ? 4.6 : 4.1 } : null;
 }
 
-export default function SatelliteWorldPrecision({ records, importedEntities, selectedId, onSelect, view, onViewChange }: { records: LegalRecord[]; importedEntities: ImportedEntity[]; selectedId: string | null; onSelect: (id: string) => void; view: PrecisionView; onViewChange: (view: PrecisionView) => void }) {
+export default function SatelliteWorldPrecision({ records, importedEntities, selectedId, onSelect, view, onViewChange, onUnavailable }: { records: LegalRecord[]; importedEntities: ImportedEntity[]; selectedId: string | null; onSelect: (id: string) => void; view: PrecisionView; onViewChange: (view: PrecisionView) => void; onUnavailable: () => void }) {
   const mapRef = useRef<google.maps.Map | null>(null);
   const initializedRef = useRef(false);
   const indiaLoadedRef = useRef(false);
@@ -148,7 +148,7 @@ export default function SatelliteWorldPrecision({ records, importedEntities, sel
   useEffect(() => () => clearEntityMarkers(), [clearEntityMarkers]);
 
   return <div data-venture-overlay className="absolute inset-0 z-0 bg-[#20281f] select-none" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
-    <MapView className="atlas-precision-map h-full w-full" initialCenter={{ lat: view.lat, lng: view.lng }} initialZoom={view.zoom} options={{ minZoom: 2, maxZoom: 22, disableDefaultUI: true, mapTypeControl: false, fullscreenControl: false, zoomControl: false, streetViewControl: false, keyboardShortcuts: false, gestureHandling: "greedy", clickableIcons: false }} onMapReady={onMapReady} />
+    <MapView className="atlas-precision-map h-full w-full" initialCenter={{ lat: view.lat, lng: view.lng }} initialZoom={view.zoom} options={{ minZoom: 2, maxZoom: 22, disableDefaultUI: true, mapTypeControl: false, fullscreenControl: false, zoomControl: false, streetViewControl: false, keyboardShortcuts: false, gestureHandling: "greedy", clickableIcons: false }} onMapReady={onMapReady} onMapUnavailable={onUnavailable} />
     <div className="pointer-events-none absolute bottom-5 left-1/2 z-10 -translate-x-1/2 rounded-full border border-white/20 bg-[#172018]/90 px-4 py-2 font-mono text-[9px] uppercase tracking-[.13em] text-white/90 shadow-lg">Google hybrid visual context · imagery to zoom 22 · Atlas overlays retain their own source and precision</div>
   </div>;
 }

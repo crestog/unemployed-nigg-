@@ -43,6 +43,7 @@ export default function GlobalVentureAtlas() {
   const [showResults, setShowResults] = useState(false);
   const [drag, setDrag] = useState<{ pointer: number; x: number; y: number } | null>(null);
   const [precisionMode, setPrecisionMode] = useState(() => new URLSearchParams(window.location.hash.replace(/^#/, "")).get("wm") === "hybrid");
+  const [precisionNotice, setPrecisionNotice] = useState<string | null>(null);
   const [precisionView, setPrecisionView] = useState(() => {
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const lat = Number.parseFloat(params.get("wlat") ?? "20.5937");
@@ -126,7 +127,7 @@ export default function GlobalVentureAtlas() {
   if (!release || !activeLayer) return <div className="grid min-h-[calc(100vh-68px)] place-items-center bg-[#fbfaf8]"><div className="animate-pulse font-display text-3xl text-[#0f766e]">Loading the world source release…</div></div>;
 
   return <section ref={surfaceRef} className={`relative min-h-[calc(100vh-68px)] overflow-hidden bg-[#fbfaf8] select-none ${drag ? "cursor-grabbing" : "cursor-grab"}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => setDrag(null)} onWheel={onWheel} onDoubleClick={onDoubleClick}>
-    {precisionMode ? <SatelliteWorldPrecision records={release.layers.legalEntities.records ?? []} importedEntities={importedEntities} selectedId={selectedId} onSelect={selectCountry} view={precisionView} onViewChange={setPrecisionView} /> : <svg className="absolute inset-0 h-full w-full touch-none" aria-label="World map of source-bounded legal entity and policy evidence" role="img" viewBox={`0 0 ${size.width} ${size.height}`}>
+    {precisionMode ? <SatelliteWorldPrecision records={release.layers.legalEntities.records ?? []} importedEntities={importedEntities} selectedId={selectedId} onSelect={selectCountry} view={precisionView} onViewChange={setPrecisionView} onUnavailable={() => { setPrecisionMode(false); setPrecisionNotice("Satellite visual context could not be loaded. Atlas geometry remains interactive and all source layers are still available."); }} /> : <svg className="absolute inset-0 h-full w-full touch-none" aria-label="World map of source-bounded legal entity and policy evidence" role="img" viewBox={`0 0 ${size.width} ${size.height}`}>
       <defs><pattern id="world-grid" width="52" height="52" patternUnits="userSpaceOnUse"><path d="M 52 0 L 0 0 0 52" fill="none" stroke="rgba(110,105,93,.12)" strokeWidth="1" /></pattern></defs>
       <rect width={size.width} height={size.height} fill="#fbfaf8" /><rect width={size.width} height={size.height} fill="url(#world-grid)" opacity=".58" />
       <g transform={`translate(${camera.x} ${camera.y}) scale(${camera.k}) translate(${-size.width / 2} ${-size.height / 2})`}>
@@ -139,7 +140,8 @@ export default function GlobalVentureAtlas() {
       <div className="mt-2 flex flex-wrap gap-2"><div className="inline-flex rounded-full border border-[#d9d6ca] bg-[#fffefb]/95 p-1 shadow-sm backdrop-blur" role="tablist" aria-label="World evidence layers">
         <button role="tab" aria-selected={layer === "legal"} onClick={() => setLayer("legal")} className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${layer === "legal" ? "bg-[#0f766e] text-white" : "text-[#5d6058] hover:bg-[#f0ede3]"}`}>Legal entities</button>
         <button role="tab" aria-selected={layer === "policy"} onClick={() => setLayer("policy")} className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${layer === "policy" ? "bg-[#ba7a48] text-white" : "text-[#5d6058] hover:bg-[#f0ede3]"}`}>Policy initiatives</button>
-      </div><button onClick={() => setPrecisionMode((current) => !current)} className={`rounded-full border px-3 py-1.5 text-[11px] font-semibold shadow-sm backdrop-blur ${precisionMode ? "border-[#2f837e] bg-[#daf0eb]/95 text-[#16645f]" : "border-[#d9d6ca] bg-[#fffefb]/95 text-[#5d6058] hover:border-[#2f837e]"}`}>{precisionMode ? "Satellite precision · on" : "Satellite precision · off"}</button><EntityDatasetImport onEntitiesChange={setImportedEntities} /></div>
+      </div><button onClick={() => { setPrecisionNotice(null); setPrecisionMode((current) => !current); }} className={`rounded-full border px-3 py-1.5 text-[11px] font-semibold shadow-sm backdrop-blur ${precisionMode ? "border-[#2f837e] bg-[#daf0eb]/95 text-[#16645f]" : "border-[#d9d6ca] bg-[#fffefb]/95 text-[#5d6058] hover:border-[#2f837e]"}`}>{precisionMode ? "Satellite precision · on" : "Satellite precision · off"}</button><EntityDatasetImport onEntitiesChange={setImportedEntities} /></div>
+      {precisionNotice && <div className="mt-2 max-w-[460px] border border-[#dfc681] bg-[#fffaf0]/98 px-3 py-2 text-xs leading-5 text-[#765b21] shadow-sm">{precisionNotice}</div>}
     </div>
 
     <aside data-venture-overlay className="absolute left-4 top-[128px] z-20 hidden w-[310px] border border-[#d5d2c7] bg-[#fffefb]/94 p-4 shadow-sm backdrop-blur lg:block select-none" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>

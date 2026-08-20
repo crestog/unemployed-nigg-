@@ -178,14 +178,8 @@ export default function InfiniteAtlas({ data, onOpenRoadmap }: { data: Release; 
         const towardCenter = screen.x < size.width / 2 ? 1 : -1;
         const stubX = screen.x + towardCenter * (contour + 34);
         const stubY = screen.y - 13;
-        const verticalField = screen.y < size.height / 2 ? "north field" : "south field";
-        const horizontalField = screen.x < size.width / 2 ? "west grid" : "east grid";
-        const note = `${verticalField} · ${horizontalField}`;
         context.beginPath(); context.moveTo(screen.x + towardCenter * contour, screen.y); context.lineTo(stubX, stubY); context.strokeStyle = "rgba(15,118,110,.38)"; context.lineWidth = 1; context.stroke();
         context.fillStyle = "#ba7a48"; context.fillRect(stubX - 2, stubY - 2, 4, 4);
-        context.font = '8px "IBM Plex Mono", monospace'; const noteWidth = context.measureText(note).width + 10;
-        const noteLeft = towardCenter > 0 ? stubX + 5 : stubX - noteWidth - 5;
-        if (noteLeft > 6 && noteLeft + noteWidth < size.width - 6 && stubY > 66) { context.fillStyle = "rgba(255,253,247,.86)"; context.fillRect(noteLeft, stubY - 10, noteWidth, 14); context.fillStyle = "#8a6417"; context.fillText(note, noteLeft + 5, stubY); }
       });
       if (size.width >= 760) { const unresolvedX = size.width - 270; const unresolvedY = size.height - 114;
         context.fillStyle = "rgba(255,241,239,.88)"; context.fillRect(unresolvedX, unresolvedY, 242, 48); context.strokeStyle = "rgba(185,92,120,.52)"; context.strokeRect(unresolvedX, unresolvedY, 242, 48);

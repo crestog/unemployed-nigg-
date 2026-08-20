@@ -56,6 +56,13 @@ export default function SatelliteWorldPrecision({ records, importedEntities, sel
   const recordsById = useMemo(() => new Map(records.map((item) => [item.topologyId, item])), [records]);
   const maxTotal = useMemo(() => Math.max(1, ...records.map((item) => item.total ?? 0)), [records]);
 
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      if (!initializedRef.current) onUnavailable();
+    }, 3500);
+    return () => window.clearTimeout(timeout);
+  }, [onUnavailable]);
+
   const clearEntityMarkers = useCallback(() => { entityMarkersRef.current.forEach((marker) => marker.setMap(null)); entityMarkersRef.current = []; }, []);
   const refreshEntityMarkers = useCallback(() => {
     const map = mapRef.current;

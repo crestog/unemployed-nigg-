@@ -106,7 +106,9 @@ function loadMapScript(): Promise<boolean> {
       resolve(available && Boolean(window.google?.maps));
     };
     const timeout = window.setTimeout(() => finish(false), 8000);
-    script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry`;
+    const query = new URLSearchParams({ v: "weekly", libraries: "marker,places,geocoding,geometry" });
+    if (API_KEY) query.set("key", API_KEY);
+    script.src = `${MAPS_PROXY_URL}/maps/api/js?${query.toString()}`;
     script.async = true;
     script.onload = () => finish(true);
     script.onerror = () => finish(false);

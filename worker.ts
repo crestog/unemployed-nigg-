@@ -1,7 +1,19 @@
+interface AiBinding {
+  run: (model: string, input: Record<string, unknown>) => Promise<unknown>;
+}
+
 interface Env {
   ASSETS: Fetcher;
   ATLAS_DB: D1Database;
+  AI?: AiBinding;
 }
+
+type TopicContext = {
+  id: string;
+  title: string;
+  summary: string;
+  slug: string;
+};
 
 type StateAction =
   | { action: "snapshot" }
@@ -23,13 +35,120 @@ type StateAction =
       topicIds: string[];
     };
 
+type AiPlanRequest = {
+  goal: string;
+  level: string;
+  hours: number;
+  pace: string;
+  roadmap: { slug: string; title: string; description: string };
+  topics: TopicContext[];
+  completedIds?: string[];
+  notes?: Record<string, string>;
+};
+
+type AiChatRequest = {
+  roadmap: { slug: string; title: string; description: string };
+  question: string;
+  topics: TopicContext[];
+  progress?: Record<string, boolean>;
+  notes?: Record<string, string>;
+  history?: Array<{ role: "user" | "assistant"; content: string }>;
+};
+
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
 };
 
+const PLAN_SCHEMA = {
+  type: "object",
+  properties: {
+    interpretation: { type: "string" },
+    confidence: { type: "number" },
+    clarifyingNeeded: { type: "boolean" },
+    followUpQuestions: { type: "array", items: { type: "string" } },
+    assumptions: { type: "array", items: { type: "string" } },
+    weeklyRhythm: { type: "string" },
+    phases: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          outcome: { type: "string" },
+          topicIds: { type: "array", items: { type: "string" } },
+          why: { type: "string" },
+          project: { type: "string" },
+          checkpoint: { type: "string" },
+          hours: { type: "number" },
+        },
+        required: [
+          "title",
+          "outcome",
+          "topicIds",
+          "why",
+          "project",
+          "checkpoint",
+          "hours",
+        ],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: [
+    "interpretation",
+    "confidence",
+    "clarifyingNeeded",
+    "followUpQuestions",
+    "assumptions",
+    "weeklyRhythm",
+    "phases",
+  ],
+  additionalProperties: false,
+};
+
+const CHAT_SCHEMA = {
+  type: "object",
+  properties: {
+    answer: { type: "string" },
+    topicIds: { type: "array", items: { type: "string" } },
+    suggestedPrompts: { type: "array", items: { type: "string" } },
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["complete", "uncomplete", "save_note", "recommend_next"],
+          },
+          topicId: { type: "string" },
+          note: { type: "string" },
+        },
+        required: ["type", "topicId", "note"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["answer", "topicIds", "suggestedPrompts", "actions"],
+  additionalProperties: false,
+};
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: jsonHeaders });
+}
+
+function text(value: unknown, max = 4000) {
+  return String(value ?? "")
+    .replace(/\u0000/g, "")
+    .slice(0, max);
+}
+
+function number(value: unknown, min: number, max: number, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(min, Math.min(max, parsed))
+    : fallback;
 }
 
 function profileId(request: Request) {
@@ -43,6 +162,280 @@ function profileId(request: Request) {
 
 function now() {
   return new Date().toISOString();
+}
+
+function compactTopics(topics: unknown, max = 120): TopicContext[] {
+  if (!Array.isArray(topics)) return [];
+  return topics
+    .slice(0, max)
+    .map(topic => {
+      const item = (topic || {}) as Record<string, unknown>;
+      return {
+        id: text(item.id, 160),
+        title: text(item.title, 160),
+        summary: text(item.summary, 600),
+        slug: text(item.slug, 160),
+      };
+    })
+    .filter(topic => topic.id && topic.title);
+}
+
+function parseAiPayload(raw: unknown): Record<string, unknown> | null {
+  const result = (raw || {}) as Record<string, unknown>;
+  const candidate = result.response ?? result.result ?? result.output ?? result;
+  if (typeof candidate === "object" && candidate !== null)
+    return candidate as Record<string, unknown>;
+  if (typeof candidate === "string") {
+    try {
+      return JSON.parse(candidate) as Record<string, unknown>;
+    } catch {
+      const fenced = candidate.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+      if (fenced) {
+        try {
+          return JSON.parse(fenced) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function topicMap(topics: TopicContext[]) {
+  return new Map(topics.map(topic => [topic.id, topic]));
+}
+
+function validIds(ids: unknown, topics: TopicContext[], max = 30) {
+  const allowed = topicMap(topics);
+  if (!Array.isArray(ids)) return [];
+  return Array.from(
+    new Set(ids.map(id => text(id, 160)).filter(id => allowed.has(id)))
+  ).slice(0, max);
+}
+
+function fallbackPlan(input: AiPlanRequest, topics: TopicContext[]) {
+  const count = input.pace === "fast" ? 8 : input.pace === "deep" ? 4 : 6;
+  const chosen = topics.slice(0, count);
+  return {
+    mode: "fallback",
+    interpretation: `A ${input.pace} ${input.hours}-hour weekly starting route for ${input.level} learners focused on ${input.goal}.`,
+    confidence: 0.35,
+    clarifyingNeeded: false,
+    followUpQuestions: [],
+    assumptions: [
+      "Atlas used the first available public topic sequence because the AI service was unavailable.",
+    ],
+    weeklyRhythm: `${Math.max(1, Math.round(Number(input.hours) / Math.max(1, chosen.length)))} focused hours per topic, plus one short review session each week.`,
+    phases: [
+      {
+        title: "Start with the foundations",
+        outcome:
+          "Build enough vocabulary and mental models to navigate the roadmap confidently.",
+        topicIds: chosen.map(topic => topic.id),
+        why: "These are the first public topic records available for the selected roadmap.",
+        project: `Create a small ${input.goal} learning artifact that demonstrates the first concepts you understand.`,
+        checkpoint:
+          "Explain the first three topics in your own words and link them to one working example.",
+        hours: Number(input.hours),
+      },
+    ],
+  };
+}
+
+async function runJsonModel(
+  env: Env,
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  schema: Record<string, unknown>
+) {
+  if (!env.AI) return null;
+  try {
+    const response = await env.AI.run(model, {
+      messages,
+      temperature: 0.2,
+      max_tokens: 5000,
+      response_format: { type: "json_schema", json_schema: schema },
+    });
+    return parseAiPayload(response);
+  } catch {
+    return null;
+  }
+}
+
+async function aiPlanResponse(request: Request, env: Env) {
+  let input: AiPlanRequest;
+  try {
+    input = (await request.json()) as AiPlanRequest;
+  } catch {
+    return json({ error: "Request body must be JSON" }, 400);
+  }
+  const goal = text(input.goal, 500).trim();
+  const level = text(input.level, 60) || "beginner";
+  const hours = number(input.hours, 1, 168, 5);
+  const pace = text(input.pace, 60) || "steady";
+  const roadmap = {
+    slug: text(input.roadmap?.slug, 120),
+    title: text(input.roadmap?.title, 160),
+    description: text(input.roadmap?.description, 500),
+  };
+  if (!goal || !roadmap.slug)
+    return json({ error: "Goal and roadmap are required" }, 400);
+  const topics = compactTopics(input.topics);
+  if (!topics.length)
+    return json({ error: "At least one roadmap topic is required" }, 400);
+  const completedIds = validIds(input.completedIds, topics, 120);
+  const notes = Object.entries(input.notes || {})
+    .slice(0, 20)
+    .map(([id, note]) => `${id}: ${text(note, 400)}`)
+    .join("\n");
+  const context = topics
+    .map(
+      (topic, index) =>
+        `${index + 1}. ${topic.id} | ${topic.title} | ${topic.summary}`
+    )
+    .join("\n");
+  const system = `You are Atlas, a careful AI learning coach. Generate an explainable learning plan grounded only in the supplied roadmap metadata and topic candidates. Never invent topic IDs, topic titles, prerequisites, resources, or facts not supported by the input. Select only topic IDs from the candidates. Prefer a coherent progression: foundations before applications when the supplied sequence suggests it. Treat the learner's goal, current level, available hours, pace, completed topics, and notes as constraints. If the goal is ambiguous, set clarifyingNeeded true and ask at most two high-value follow-up questions, but still provide a useful provisional plan. Keep each phase concrete and actionable. Do not mention private roadmap.sh internals.`;
+  const user = `Learner goal: ${goal}\nCurrent level: ${level}\nHours per week: ${hours}\nDepth/pace: ${pace}\nRoadmap: ${roadmap.title} (${roadmap.slug})\nDescription: ${roadmap.description}\nCompleted topic IDs: ${completedIds.join(", ") || "none"}\nLearner notes:\n${notes || "none"}\n\nCandidate topics:\n${context}`;
+  const generated = await runJsonModel(
+    env,
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    PLAN_SCHEMA
+  );
+  if (!generated)
+    return json({
+      ...fallbackPlan({ goal, level, hours, pace, roadmap, topics }, topics),
+      roadmapSlug: roadmap.slug,
+    });
+  const phases = Array.isArray(generated.phases) ? generated.phases : [];
+  const safePhases = phases
+    .slice(0, 8)
+    .map(phase => {
+      const item = (phase || {}) as Record<string, unknown>;
+      return {
+        title: text(item.title, 160),
+        outcome: text(item.outcome, 500),
+        topicIds: validIds(item.topicIds, topics, 12),
+        why: text(item.why, 700),
+        project: text(item.project, 700),
+        checkpoint: text(item.checkpoint, 700),
+        hours: number(item.hours, 0.5, 168, hours),
+      };
+    })
+    .filter(phase => phase.title && phase.topicIds.length);
+  return json({
+    mode: "ai",
+    roadmapSlug: roadmap.slug,
+    interpretation: text(generated.interpretation, 800),
+    confidence: number(generated.confidence, 0, 1, 0.6),
+    clarifyingNeeded: Boolean(generated.clarifyingNeeded),
+    followUpQuestions: Array.isArray(generated.followUpQuestions)
+      ? generated.followUpQuestions.map(item => text(item, 300)).slice(0, 2)
+      : [],
+    assumptions: Array.isArray(generated.assumptions)
+      ? generated.assumptions.map(item => text(item, 300)).slice(0, 6)
+      : [],
+    weeklyRhythm: text(generated.weeklyRhythm, 700),
+    phases: safePhases.length
+      ? safePhases
+      : fallbackPlan({ goal, level, hours, pace, roadmap, topics }, topics)
+          .phases,
+  });
+}
+
+async function aiChatResponse(request: Request, env: Env) {
+  let input: AiChatRequest;
+  try {
+    input = (await request.json()) as AiChatRequest;
+  } catch {
+    return json({ error: "Request body must be JSON" }, 400);
+  }
+  const question = text(input.question, 1000).trim();
+  const roadmap = {
+    slug: text(input.roadmap?.slug, 120),
+    title: text(input.roadmap?.title, 160),
+    description: text(input.roadmap?.description, 500),
+  };
+  const topics = compactTopics(input.topics, 80);
+  if (!question || !roadmap.slug || !topics.length)
+    return json(
+      { error: "Roadmap, question, and topic context are required" },
+      400
+    );
+  const progress = Object.entries(input.progress || {})
+    .filter(([, done]) => Boolean(done))
+    .map(([id]) => id)
+    .filter(id => topicMap(topics).has(id))
+    .slice(0, 120);
+  const notes = Object.entries(input.notes || {})
+    .slice(0, 20)
+    .map(([id, note]) => `${id}: ${text(note, 400)}`)
+    .join("\n");
+  const history = (input.history || [])
+    .slice(-8)
+    .map(message => `${message.role}: ${text(message.content, 1200)}`)
+    .join("\n");
+  const context = topics
+    .map(topic => `${topic.id} | ${topic.title} | ${topic.summary}`)
+    .join("\n");
+  const system = `You are Atlas AI Tutor inside the ${roadmap.title} roadmap. Answer as a precise, encouraging learning coach. You can explain concepts, recommend what to learn next, use progress to avoid completed topics, surface public topic resources only when the user asks and the client can display them, and suggest a small action. Ground claims in the supplied roadmap context. Never invent a topic ID, resource, or roadmap fact. If you propose an action, use only complete, uncomplete, save_note, or recommend_next. Keep the answer under 350 words and include 2-3 useful suggested prompts.`;
+  const user = `Roadmap: ${roadmap.title} (${roadmap.slug})\nDescription: ${roadmap.description}\nCompleted topic IDs: ${progress.join(", ") || "none"}\nLearner notes:\n${notes || "none"}\nRecent conversation:\n${history || "none"}\n\nTopic context:\n${context}\n\nLearner question: ${question}`;
+  const generated = await runJsonModel(
+    env,
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    CHAT_SCHEMA
+  );
+  if (!generated)
+    return json({
+      mode: "fallback",
+      answer:
+        "The AI tutor is temporarily unavailable. Try asking about a specific topic, or open the topic list and mark the next unfinished item as complete.",
+      topicIds: [],
+      suggestedPrompts: [
+        "What should I learn next?",
+        "Explain the first unfinished topic",
+        "Show me the most important foundation",
+      ],
+      actions: [],
+    });
+  const allowedIds = topicMap(topics);
+  const actions = Array.isArray(generated.actions)
+    ? generated.actions
+        .slice(0, 4)
+        .map(action => {
+          const item = (action || {}) as Record<string, unknown>;
+          const topicId = text(item.topicId, 160);
+          return {
+            type: text(item.type, 40),
+            topicId: allowedIds.has(topicId) ? topicId : "",
+            note: text(item.note, 1000),
+          };
+        })
+        .filter(
+          action =>
+            action.topicId &&
+            ["complete", "uncomplete", "save_note", "recommend_next"].includes(
+              action.type
+            )
+        )
+    : [];
+  return json({
+    mode: "ai",
+    answer: text(generated.answer, 2400),
+    topicIds: validIds(generated.topicIds, topics, 8),
+    suggestedPrompts: Array.isArray(generated.suggestedPrompts)
+      ? generated.suggestedPrompts.map(item => text(item, 180)).slice(0, 4)
+      : [],
+    actions,
+  });
 }
 
 async function ensureProfile(db: D1Database, id: string) {
@@ -128,7 +521,6 @@ async function stateResponse(request: Request, env: Env) {
   const id = profileId(request);
   await ensureProfile(env.ATLAS_DB, id);
   if (request.method === "GET") return json(await snapshot(env.ATLAS_DB, id));
-
   let input: StateAction;
   try {
     input = (await request.json()) as StateAction;
@@ -189,9 +581,8 @@ async function stateResponse(request: Request, env: Env) {
         timestamp
       )
       .run();
-  } else if (input.action !== "snapshot") {
+  } else if (input.action !== "snapshot")
     return json({ error: "Unknown action" }, 400);
-  }
   return json(await snapshot(env.ATLAS_DB, id));
 }
 
@@ -199,6 +590,10 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/api/state") return stateResponse(request, env);
+    if (url.pathname === "/api/ai/plan" && request.method === "POST")
+      return aiPlanResponse(request, env);
+    if (url.pathname === "/api/ai/chat" && request.method === "POST")
+      return aiChatResponse(request, env);
     if (request.method === "OPTIONS")
       return new Response(null, {
         status: 204,

@@ -3,6 +3,9 @@
   "name": "unemployed-nigg",
   "main": "./worker.ts",
   "compatibility_date": "2026-08-20",
+  "ai": {
+    "binding": "AI",
+  },
   "assets": {
     "directory": "./dist/public",
     "binding": "ASSETS",

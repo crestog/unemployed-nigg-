@@ -51,6 +51,10 @@ jobs:
         if: steps.gate.outputs.ready == 'true'
         run: pnpm install --frozen-lockfile
 
+      - name: Apply Atlas D1 migrations
+        if: steps.gate.outputs.ready == 'true'
+        run: npx wrangler d1 migrations apply atlas-roadmaps --remote --config wrangler.jsonc
+
       - name: Build static assets
         if: steps.gate.outputs.ready == 'true'
         run: pnpm build

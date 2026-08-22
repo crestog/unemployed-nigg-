@@ -7,11 +7,17 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/RealHome";
 import RoleComparisonOverlay from "./components/RoleComparisonOverlay";
+import Roadmaps from "./pages/Roadmaps";
+import RoadmapDetail from "./pages/RoadmapDetail";
+import RoadmapPlan from "./pages/RoadmapPlan";
 
 
 function Router() {
   return (
     <Switch>
+      <Route path={"/roadmaps/plan"} component={RoadmapPlan} />
+      <Route path={"/roadmaps/:slug"} component={RoadmapDetail} />
+      <Route path={"/roadmaps"} component={Roadmaps} />
       <Route path={"/"} component={Home} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}

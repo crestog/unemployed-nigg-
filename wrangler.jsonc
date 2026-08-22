@@ -1,9 +1,20 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "unemployed-nigg",
-  "compatibility_date": "2026-08-14",
+  "main": "./worker.ts",
+  "compatibility_date": "2026-08-20",
   "assets": {
     "directory": "./dist/public",
-    "not_found_handling": "single-page-application"
-  }
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+  },
+  "d1_databases": [
+    {
+      "binding": "ATLAS_DB",
+      "database_name": "atlas-roadmaps",
+      "database_id": "488b390c-c7cf-48c1-b6a3-33ef1dba6d5d",
+      "preview_database_id": "488b390c-c7cf-48c1-b6a3-33ef1dba6d5d",
+      "migrations_dir": "migrations",
+    },
+  ],
 }

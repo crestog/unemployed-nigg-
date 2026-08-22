@@ -149,6 +149,8 @@ const ROADMAP_SCHEMA = {
         ],
         additionalProperties: false,
       },
+      minItems: 12,
+      maxItems: 16,
     },
     edges: {
       type: "array",
@@ -158,6 +160,8 @@ const ROADMAP_SCHEMA = {
         required: ["source", "target"],
         additionalProperties: false,
       },
+      minItems: 11,
+      maxItems: 24,
     },
   },
   required: [
@@ -315,12 +319,15 @@ async function runJsonModel(
 ) {
   if (!env.AI) return null;
   try {
-    const response = await env.AI.run(model, {
-      messages,
-      temperature: 0.2,
-      max_tokens: 5000,
-      response_format: { type: "json_schema", json_schema: schema },
-    });
+    const response = await Promise.race([
+      env.AI.run(model, {
+        messages,
+        temperature: 0.2,
+        max_tokens: 2600,
+        response_format: { type: "json_schema", json_schema: schema },
+      }),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 18000)),
+    ]);
     return parseAiPayload(response);
   } catch {
     return null;
@@ -344,7 +351,7 @@ async function aiRoadmapResponse(request: Request, env: Env) {
   const reference = referenceTopics.length
     ? `\nRelated public topic candidates (use only if genuinely relevant; do not copy their IDs):\n${referenceTopics.map(item => `${item.title}: ${item.summary}`).join("\n")}`
     : "";
-  const system = `You are Atlas, a fast roadmap generator. Create a useful learning roadmap in one response for the requested topic. Do not ask follow-up questions. Make sensible beginner-friendly assumptions and state them. Return 12 to 24 nodes grouped into 4 to 7 sequential phases. Use stable ids like phase-1-topic-1, with no spaces. Each node must have a short description, a practical explanation, one practice task, and one observable checkpoint. Prefer a clear core spine with a few alternatives or optional nodes. Edges must connect only existing node IDs and should form a readable progression. This is an AI-generated roadmap, so do not claim that it is an official roadmap or that resources were verified. Keep every string concise so the result feels immediate and scannable.`;
+  const system = `You are Atlas, a fast roadmap generator. Create a useful learning roadmap in one response for the requested topic. Do not ask follow-up questions. Make sensible beginner-friendly assumptions and state them. Return exactly 12 to 16 concise nodes grouped into 4 to 5 sequential phases. Use stable ids like phase-1-topic-1, with no spaces. Each node must have a short description, explanation, practice task, and observable checkpoint; keep each field to one sentence. Prefer a clear core spine with a few alternatives or optional nodes. Edges must connect only existing node IDs and form a readable progression. This is an AI-generated roadmap, so do not claim it is official or that resources were verified.`;
   const user = `Topic: ${topic}\nLearner level: ${level}\nLearner goal: ${goal}\nAvailable time: ${hours} hours per week${reference}`;
   const generated = await runJsonModel(
     env,

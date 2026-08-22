@@ -45,3 +45,7 @@ DOM selection verification succeeded: clicking the exact `IndiaIN · 387,112 rec
 Nearby-mode verification succeeded: clicking `Show nearby fields` switched the camera to a local visual neighborhood around India, persisted `wxm=nearby` in the URL hash, and exposed both `Only nearby fields are shown` and `Nearby fields shown` in the rendered page text. This adapts Map of Reddit’s related-subgraph concept using geographic proximity only; Atlas labels it as a visual navigation aid rather than a semantic or causal relationship.
 
 Roadmap regression fix verification: opening `/ai/roadmap/result` without a valid stored graph now renders `ROADMAP RESPONSE UNAVAILABLE`, explains that an empty/incomplete response was not saved as a valid roadmap, and provides a `Create a roadmap` recovery button. The old misleading `0 nodes · 0 relationships` blank canvas is no longer shown for invalid session data.
+
+## Production verification
+
+After commit `6ec1d2a` and the successful GitHub Actions deployment run `32605629409`, the production URL `https://unemployed-nigg.sahudevansh482.workers.dev/#world=1` rendered the same populated World explorer: 235 country geometries, 241 country fields in the Atlas dataset view, source-backed breadcrumb, field guide, search area, and zoom interaction surface. The deployment pipeline completed dependency installation, D1 migration, static build, and Worker asset deployment successfully.

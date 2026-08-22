@@ -19,6 +19,25 @@ export type AiPlanInput = {
   notes?: Record<string, string>;
 };
 
+export type AiRoadmap = {
+  mode: "ai" | "fallback";
+  title: string;
+  description: string;
+  learnerFit: string;
+  assumptions: string[];
+  nodes: Array<{
+    id: string;
+    title: string;
+    description: string;
+    phase: string;
+    type: "core" | "alternative" | "optional";
+    explanation: string;
+    practice: string;
+    checkpoint: string;
+  }>;
+  edges: Array<{ source: string; target: string }>;
+};
+
 export type AiPlan = {
   mode: "ai" | "fallback";
   roadmapSlug: string;
@@ -116,6 +135,22 @@ async function postJson<T>(path: string, body: unknown): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+export function generateAiRoadmap(input: {
+  topic: string;
+  level?: string;
+  goal?: string;
+  hours?: number;
+  customise?: boolean;
+  referenceTopics?: Array<{
+    id: string;
+    title: string;
+    summary: string;
+    slug: string;
+  }>;
+}) {
+  return postJson<AiRoadmap>("/api/ai/roadmap", input);
 }
 
 export function generateAiPlan(input: AiPlanInput) {

@@ -46,6 +46,15 @@ type AiPlanRequest = {
   notes?: Record<string, string>;
 };
 
+type AiRoadmapRequest = {
+  topic: string;
+  level?: string;
+  goal?: string;
+  hours?: number;
+  customise?: boolean;
+  referenceTopics?: TopicContext[];
+};
+
 type AiChatRequest = {
   roadmap: { slug: string; title: string; description: string };
   question: string;
@@ -103,6 +112,61 @@ const PLAN_SCHEMA = {
     "assumptions",
     "weeklyRhythm",
     "phases",
+  ],
+  additionalProperties: false,
+};
+
+const ROADMAP_SCHEMA = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    description: { type: "string" },
+    learnerFit: { type: "string" },
+    assumptions: { type: "array", items: { type: "string" } },
+    nodes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          description: { type: "string" },
+          phase: { type: "string" },
+          type: { type: "string", enum: ["core", "alternative", "optional"] },
+          explanation: { type: "string" },
+          practice: { type: "string" },
+          checkpoint: { type: "string" },
+        },
+        required: [
+          "id",
+          "title",
+          "description",
+          "phase",
+          "type",
+          "explanation",
+          "practice",
+          "checkpoint",
+        ],
+        additionalProperties: false,
+      },
+    },
+    edges: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { source: { type: "string" }, target: { type: "string" } },
+        required: ["source", "target"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: [
+    "title",
+    "description",
+    "learnerFit",
+    "assumptions",
+    "nodes",
+    "edges",
   ],
   additionalProperties: false,
 };
@@ -261,6 +325,134 @@ async function runJsonModel(
   } catch {
     return null;
   }
+}
+
+async function aiRoadmapResponse(request: Request, env: Env) {
+  let input: AiRoadmapRequest;
+  try {
+    input = (await request.json()) as AiRoadmapRequest;
+  } catch {
+    return json({ error: "Request body must be JSON" }, 400);
+  }
+  const topic = text(input.topic, 240).trim();
+  if (!topic) return json({ error: "A topic is required" }, 400);
+  const level = text(input.level, 60) || "beginner";
+  const goal =
+    text(input.goal, 500) || `Build a practical foundation in ${topic}`;
+  const hours = number(input.hours, 1, 168, 5);
+  const referenceTopics = compactTopics(input.referenceTopics, 40);
+  const reference = referenceTopics.length
+    ? `\nRelated public topic candidates (use only if genuinely relevant; do not copy their IDs):\n${referenceTopics.map(item => `${item.title}: ${item.summary}`).join("\n")}`
+    : "";
+  const system = `You are Atlas, a fast roadmap generator. Create a useful learning roadmap in one response for the requested topic. Do not ask follow-up questions. Make sensible beginner-friendly assumptions and state them. Return 12 to 24 nodes grouped into 4 to 7 sequential phases. Use stable ids like phase-1-topic-1, with no spaces. Each node must have a short description, a practical explanation, one practice task, and one observable checkpoint. Prefer a clear core spine with a few alternatives or optional nodes. Edges must connect only existing node IDs and should form a readable progression. This is an AI-generated roadmap, so do not claim that it is an official roadmap or that resources were verified. Keep every string concise so the result feels immediate and scannable.`;
+  const user = `Topic: ${topic}\nLearner level: ${level}\nLearner goal: ${goal}\nAvailable time: ${hours} hours per week${reference}`;
+  const generated = await runJsonModel(
+    env,
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    ROADMAP_SCHEMA
+  );
+  if (!generated) {
+    const slug =
+      topic
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 60) || "learning";
+    const defaults = [
+      "Foundations",
+      "Core concepts",
+      "Guided practice",
+      "Build and review",
+    ].flatMap((phase, phaseIndex) =>
+      [1, 2, 3].map(itemIndex => ({
+        id: `phase-${phaseIndex + 1}-topic-${itemIndex}`,
+        title: `${phase} ${itemIndex}`,
+        description: `A practical ${topic} building block.`,
+        phase,
+        type: itemIndex === 1 ? "core" : "optional",
+        explanation: `Understand how ${topic} connects to ${phase.toLowerCase()}.`,
+        practice: `Create a small example that demonstrates ${topic} through ${phase.toLowerCase()}.`,
+        checkpoint: `Explain and demonstrate ${phase.toLowerCase()} without copying a template.`,
+      }))
+    );
+    return json({
+      mode: "fallback",
+      title: topic,
+      description: `A quick starting roadmap for learning ${topic}.`,
+      learnerFit: `Designed for a ${level} learner with about ${hours} hours per week.`,
+      assumptions: [
+        "Atlas used a general-purpose progression because the AI service was unavailable.",
+      ],
+      nodes: defaults,
+      edges: defaults.slice(1).map((node, index) => ({
+        source: defaults[index].id,
+        target: node.id,
+      })),
+    });
+  }
+  const rawNodes = Array.isArray(generated.nodes)
+    ? generated.nodes.slice(0, 24)
+    : [];
+  const seen = new Set<string>();
+  const nodes = rawNodes
+    .map((node, index) => {
+      const item = (node || {}) as Record<string, unknown>;
+      let id =
+        text(item.id, 80)
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, "-")
+          .replace(/-+/g, "-")
+          .replace(/^-|-$/g, "") || `node-${index + 1}`;
+      while (seen.has(id)) id = `${id}-${index + 1}`;
+      seen.add(id);
+      const kind = text(item.type, 20);
+      return {
+        id,
+        title: text(item.title, 100),
+        description: text(item.description, 300),
+        phase: text(item.phase, 80),
+        type: ["core", "alternative", "optional"].includes(kind)
+          ? kind
+          : "core",
+        explanation: text(item.explanation, 700),
+        practice: text(item.practice, 700),
+        checkpoint: text(item.checkpoint, 700),
+      };
+    })
+    .filter(node => node.title && node.phase);
+  const valid = new Set(nodes.map(node => node.id));
+  const edges = Array.isArray(generated.edges)
+    ? generated.edges
+        .map(edge => {
+          const item = (edge || {}) as Record<string, unknown>;
+          return {
+            source: text(item.source, 80),
+            target: text(item.target, 80),
+          };
+        })
+        .filter(
+          edge =>
+            valid.has(edge.source) &&
+            valid.has(edge.target) &&
+            edge.source !== edge.target
+        )
+        .slice(0, 60)
+    : [];
+  return json({
+    mode: "ai",
+    title: text(generated.title, 180) || topic,
+    description: text(generated.description, 600),
+    learnerFit: text(generated.learnerFit, 600),
+    assumptions: Array.isArray(generated.assumptions)
+      ? generated.assumptions.map(item => text(item, 300)).slice(0, 6)
+      : [],
+    nodes,
+    edges,
+  });
 }
 
 async function aiPlanResponse(request: Request, env: Env) {
@@ -590,8 +782,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/api/state") return stateResponse(request, env);
+    if (url.pathname === "/api/ai/roadmap" && request.method === "POST")
+      return aiRoadmapResponse(request, env);
     if (url.pathname === "/api/ai/plan" && request.method === "POST")
       return aiPlanResponse(request, env);
+
     if (url.pathname === "/api/ai/chat" && request.method === "POST")
       return aiChatResponse(request, env);
     if (request.method === "OPTIONS")

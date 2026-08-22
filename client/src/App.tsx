@@ -9,13 +9,15 @@ import Home from "./pages/RealHome";
 import RoleComparisonOverlay from "./components/RoleComparisonOverlay";
 import Roadmaps from "./pages/Roadmaps";
 import RoadmapDetail from "./pages/RoadmapDetail";
-import RoadmapPlan from "./pages/RoadmapPlan";
-
+import AiRoadmapGenerator from "./pages/AiRoadmapGenerator";
+import AiRoadmapResult from "./pages/AiRoadmapResult";
 
 function Router() {
   return (
     <Switch>
-      <Route path={"/roadmaps/plan"} component={RoadmapPlan} />
+      <Route path={"/ai/roadmap/result"} component={AiRoadmapResult} />
+      <Route path={"/ai/roadmap"} component={AiRoadmapGenerator} />
+      <Route path={"/roadmaps/plan"} component={AiRoadmapGenerator} />
       <Route path={"/roadmaps/:slug"} component={RoadmapDetail} />
       <Route path={"/roadmaps"} component={Roadmaps} />
       <Route path={"/"} component={Home} />
@@ -38,7 +40,11 @@ function App() {
         defaultTheme="light"
         // switchable
       >
-        <TooltipProvider><Toaster /><Router /><RoleComparisonOverlay /></TooltipProvider>
+        <TooltipProvider>
+          <Toaster />
+          <Router />
+          <RoleComparisonOverlay />
+        </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>
   );

@@ -431,6 +431,40 @@ async function aiRoadmapResponse(request: Request, env: Env) {
       };
     })
     .filter(node => node.title && node.phase);
+  if (nodes.length < 6) {
+    const fallbackPhases = [
+      "Foundations",
+      "Core concepts",
+      "Guided practice",
+      "Build and review",
+    ];
+    const fallbackNodes = fallbackPhases.flatMap((phase, phaseIndex) =>
+      [1, 2, 3].map(itemIndex => ({
+        id: `phase-${phaseIndex + 1}-topic-${itemIndex}`,
+        title: `${phase} ${itemIndex}`,
+        description: `A practical ${topic} building block.`,
+        phase,
+        type: itemIndex === 1 ? "core" : "optional",
+        explanation: `Understand how ${topic} connects to ${phase.toLowerCase()}.`,
+        practice: `Create a small example that demonstrates ${topic} through ${phase.toLowerCase()}.`,
+        checkpoint: `Explain and demonstrate ${phase.toLowerCase()} without copying a template.`,
+      }))
+    );
+    return json({
+      mode: "fallback",
+      title: topic,
+      description: `A quick starting roadmap for learning ${topic}.`,
+      learnerFit: `Designed for a ${level} learner with about ${hours} hours per week.`,
+      assumptions: [
+        "Atlas replaced an incomplete provider response with a general-purpose progression.",
+      ],
+      nodes: fallbackNodes,
+      edges: fallbackNodes.slice(1).map((node, index) => ({
+        source: fallbackNodes[index].id,
+        target: node.id,
+      })),
+    });
+  }
   const valid = new Set(nodes.map(node => node.id));
   const edges = Array.isArray(generated.edges)
     ? generated.edges

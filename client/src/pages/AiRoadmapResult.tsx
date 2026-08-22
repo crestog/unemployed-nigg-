@@ -17,9 +17,29 @@ function readJson<T>(key: string, fallback: T): T {
   }
 }
 
+function isGeneratedRoadmap(value: unknown): value is GeneratedRoadmap {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<GeneratedRoadmap>;
+  return (
+    typeof candidate.title === "string" &&
+    typeof candidate.description === "string" &&
+    Array.isArray(candidate.nodes) &&
+    candidate.nodes.length >= 6 &&
+    candidate.nodes.every(
+      node =>
+        node &&
+        typeof node.id === "string" &&
+        typeof node.title === "string" &&
+        typeof node.phase === "string"
+    ) &&
+    Array.isArray(candidate.edges)
+  );
+}
+
 export default function AiRoadmapResult() {
   const [, navigate] = useLocation();
   const [roadmap, setRoadmap] = useState<GeneratedRoadmap | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [completed, setCompleted] = useState<string[]>(() =>
     readJson(PROGRESS_KEY, [])
   );
@@ -30,13 +50,18 @@ export default function AiRoadmapResult() {
 
   useEffect(() => {
     try {
-      setRoadmap(
-        JSON.parse(
-          sessionStorage.getItem("atlas-generated-roadmap") || "null"
-        ) as GeneratedRoadmap | null
+      const parsed: unknown = JSON.parse(
+        sessionStorage.getItem("atlas-generated-roadmap") || "null"
       );
+      if (isGeneratedRoadmap(parsed)) {
+        setRoadmap(parsed);
+      } else {
+        setLoadError(
+          "Atlas received an empty or incomplete roadmap response. Nothing was saved as a valid roadmap."
+        );
+      }
     } catch {
-      setRoadmap(null);
+      setLoadError("The saved roadmap response could not be read.");
     }
   }, []);
 
@@ -62,8 +87,17 @@ export default function AiRoadmapResult() {
   if (!roadmap)
     return (
       <div className="grid min-h-screen place-items-center bg-[#f5f6f8] px-5 text-center text-[#111827]">
-        <div>
-          <p className="font-bold">No generated roadmap found.</p>
+        <div className="max-w-md">
+          <p className="text-xs font-extrabold uppercase tracking-[.16em] text-[#6d4aff]">
+            Roadmap response unavailable
+          </p>
+          <p className="mt-3 text-base font-bold">
+            {loadError || "No generated roadmap found."}
+          </p>
+          <p className="mt-3 text-sm leading-6 text-[#697386]">
+            Try the one-submit generator again. Atlas will only open a result
+            when it has a real graph to render.
+          </p>
           <button
             type="button"
             onClick={() => navigate("/ai/roadmap")}

@@ -38,9 +38,14 @@ export default function AiRoadmapGenerator() {
       customise,
     });
     setBusy(false);
-    if (!roadmap) {
+    if (
+      !roadmap ||
+      !Array.isArray(roadmap.nodes) ||
+      roadmap.nodes.length < 6 ||
+      !Array.isArray(roadmap.edges)
+    ) {
       setError(
-        "Atlas could not generate the roadmap right now. Please try again."
+        "Atlas returned an empty roadmap. Please try again; the result was not opened."
       );
       return;
     }

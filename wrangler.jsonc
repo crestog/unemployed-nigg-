@@ -4,12 +4,12 @@
   "main": "./worker.ts",
   "compatibility_date": "2026-08-20",
   "ai": {
-    "binding": "AI",
+    "binding": "AI"
   },
   "assets": {
     "directory": "./dist/public",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application",
+    "not_found_handling": "single-page-application"
   },
   "d1_databases": [
     {
@@ -17,7 +17,7 @@
       "database_name": "atlas-roadmaps",
       "database_id": "488b390c-c7cf-48c1-b6a3-33ef1dba6d5d",
       "preview_database_id": "488b390c-c7cf-48c1-b6a3-33ef1dba6d5d",
-      "migrations_dir": "migrations",
-    },
-  ],
+      "migrations_dir": "migrations"
+    }
+  ]
 }

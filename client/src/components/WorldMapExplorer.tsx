@@ -8,6 +8,7 @@ import { feature } from "topojson-client";
 import {
   geoBounds,
   geoCentroid,
+  geoDistance,
   geoContains,
   geoNaturalEarth1,
   geoPath,
@@ -682,16 +683,20 @@ export default function WorldMapExplorer() {
       }),
     [indiaLocalityRecords, projection]
   );
-  const indiaGeoBounds = useMemo(() => {
-    if (!indiaNode) return null;
-    return geoBounds(indiaNode.feature as GeoJSON.Feature) as [[number, number], [number, number]];
-  }, [indiaNode]);
   const indiaInView = useMemo(() => {
-    if (!indiaGeoBounds || !mapView) return false;
-    const [[west, south], [east, north]] = mapView.bounds;
-    const [[indiaWest, indiaSouth], [indiaEast, indiaNorth]] = indiaGeoBounds;
-    return east >= indiaWest && west <= indiaEast && north >= indiaSouth && south <= indiaNorth;
-  }, [indiaGeoBounds, mapView]);
+    if (!mapView) return false;
+    const angularDistance = geoDistance(mapView.center, [79, 23]) * (180 / Math.PI);
+    const visibleRadius = mapView.zoom <= 2.8
+      ? 105
+      : mapView.zoom <= 3.8
+        ? 75
+        : mapView.zoom <= 4.8
+          ? 52
+          : mapView.zoom <= 6
+            ? 38
+            : 24;
+    return angularDistance <= visibleRadius;
+  }, [mapView]);
   const viewportGeoBounds = mapView?.bounds ?? null;
   useEffect(() => {
     if (!indiaNode || camera.k < 1.45 || !indiaInView) return;

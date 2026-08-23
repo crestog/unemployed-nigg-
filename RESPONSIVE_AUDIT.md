@@ -65,3 +65,29 @@ The Worker returned HTTP 200 and production phone screenshots loaded after the r
 Chromium emitted only its unrelated Google registration warnings during headless capture; no application error or exception was reported.
 
 The production Roadmaps catalog fits the phone viewport with a compact hero, stacked calls to action, three stat cards, and a clean transition into the catalog search. The production AI generator fits with no global compare utility covering the form; its topic input, format cards, optional checkbox, and Generate button remain readable and tappable.
+
+## Smooth-map benchmark notes
+
+The public Map of Reddit renderer uses a GPU-backed scene with separate point, line, polygon, and text collections. It registers pointer events on the scene rather than rerendering the application on every pointer move. Its selection lookup uses an RBush spatial index plus nearest-neighbor search, not a full scan of every node. Camera transforms update a scene view and only persist URL state through a debounced transform callback. Highlighted links recalculate line width from camera distance, and the renderer keeps labels in dedicated text collections rather than recreating DOM/SVG text during movement.
+
+Atlas currently has a good direct SVG camera transform for World and a Canvas renderer for Graph, but World still renders every country path and every node as React SVG children. Graph redraws a large canvas when React camera state changes. The optimization target is to separate the interaction camera from React application state, commit camera state on animation frames or gesture end, cap device pixel ratio, and apply deterministic level-of-detail budgets for entities, labels, glows, and paths.
+
+## Atlas profile baseline
+
+At the local desktop browser viewport, the World SVG currently contains 243 country paths, 237 groups, 472 circles, and no text elements at the initial camera. The surface measured 1265 × 1032 CSS pixels because the home shell plus the map surface still creates a page-height overflow on the desktop browser. World camera motion itself is direct-group based, but all country paths and glow circles remain mounted at all zoom levels. The next optimization will keep the geographic base path stable, reduce mounted field nodes by a level-of-detail budget, and avoid filter-heavy glows for off-screen or low-priority entities.
+
+## Optimized render footprint
+
+After the level-of-detail pass, the World SVG at default zoom contains 243 country paths, 141 groups, and 280 circles, with no labels mounted. This is down from 472 circles and 237 groups before the pass, while preserving all country geometry and the source-backed field count. Labels are now mounted only by a zoom-aware budget, and off-priority glow filters are disabled at overview zoom.
+
+## Extreme zoom verification
+
+The updated World map reaches its maximum 18× zoom clamp after repeated wheel events, with the SVG transform stable at `scale(18)`. A subsequent pinch at the maximum correctly remains clamped rather than exceeding the configured limit. The earlier immediate wheel-transform read occurred before the animation frame; the settled transform confirmed the wheel loop executed.
+
+At the refreshed local max zoom, the World map reaches `scale(18)` and exposes 156 labels rather than mounting every country label. Full zoom detail restores all 236 source-backed field nodes (472 circles including their paired glow/marker circles), while overview zoom stays on the reduced 140-node budget. This creates a stable semantic hierarchy: sparse overview, bounded mid-zoom labels, and full detail only when the user intentionally zooms in.
+
+The local app switches successfully from World to Graph via the tab control. The Graph route exposes a single interactive canvas with compact layer/search/zoom controls and a route-persisted camera hash, making it suitable for the same imperative motion test.
+
+The first synthetic Graph gesture did not change the canvas because it targeted the canvas parent rather than the actual `#atlas-canvas` section that owns the pointer handlers. The DOM ancestry confirms `#atlas-canvas` is the correct interaction surface; the canvas itself is an absolutely positioned child.
+
+The corrected Graph touch test waits one animation frame and confirms the canvas transform changes from `translate(0px, 0px) scale(1)` to `translate(80px, 40px) scale(1)`. The immediate pre-frame read was unchanged by design; motion is now deferred to the next frame to avoid synchronous redraw work.

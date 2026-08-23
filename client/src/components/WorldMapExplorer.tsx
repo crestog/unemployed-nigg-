@@ -134,6 +134,9 @@ export default function WorldMapExplorer() {
   );
   const suppressClickUntilRef = useRef(0);
   const cameraRef = useRef<Camera>({ x: 640, y: 380, k: 1 });
+  const queuedCameraRef = useRef<Camera | null>(null);
+  const cameraFrameRef = useRef<number | null>(null);
+  const wheelCommitRef = useRef<number | null>(null);
   const mapGroupRef = useRef<SVGGElement>(null);
   const dragRef = useRef<{ pointer: number; x: number; y: number } | null>(
     null
@@ -155,11 +158,17 @@ export default function WorldMapExplorer() {
 
   const applyCamera = (next: Camera, commit = false) => {
     cameraRef.current = next;
-    if (mapGroupRef.current) {
-      mapGroupRef.current.setAttribute(
-        "transform",
-        `translate(${next.x} ${next.y}) scale(${next.k}) translate(${-size.width / 2} ${-size.height / 2})`
-      );
+    queuedCameraRef.current = next;
+    if (cameraFrameRef.current === null) {
+      cameraFrameRef.current = window.requestAnimationFrame(() => {
+        cameraFrameRef.current = null;
+        const queued = queuedCameraRef.current;
+        if (!queued || !mapGroupRef.current) return;
+        mapGroupRef.current.setAttribute(
+          "transform",
+          `translate(${queued.x} ${queued.y}) scale(${queued.k}) translate(${-size.width / 2} ${-size.height / 2})`
+        );
+      });
     }
     if (commit) setCamera(next);
   };
@@ -174,6 +183,16 @@ export default function WorldMapExplorer() {
       );
     }
   }, [camera, size.height, size.width]);
+
+  useEffect(
+    () => () => {
+      if (cameraFrameRef.current !== null)
+        window.cancelAnimationFrame(cameraFrameRef.current);
+      if (wheelCommitRef.current !== null)
+        window.clearTimeout(wheelCommitRef.current);
+    },
+    []
+  );
 
   useEffect(() => {
     fetch("/data/world-venture.json")
@@ -288,6 +307,53 @@ export default function WorldMapExplorer() {
         .map(item => item.id)
     );
   }, [nodes, selected]);
+  const nodeBudget = camera.k < 1.2 ? 140 : camera.k < 2.8 ? 220 : nodes.length;
+  const visibleNodes = useMemo(() => {
+    if (nearbyMode) return nodes.filter(node => nearbyIds.has(node.id));
+    return [...nodes]
+      .sort((a, b) => {
+        if (a.id === selectedId) return -1;
+        if (b.id === selectedId) return 1;
+        return (b.total ?? -1) - (a.total ?? -1);
+      })
+      .slice(0, nodeBudget);
+  }, [nearbyIds, nearbyMode, nodeBudget, nodes, selectedId]);
+  const labelIds = useMemo(() => {
+    const labelBudget =
+      camera.k < 1.6 ? 0 : camera.k < 2.8 ? 44 : camera.k < 6 ? 96 : 160;
+    const labels = new Set<string>();
+    const boxes: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+    }[] = [];
+    visibleNodes.forEach((node, index) => {
+      const isSelected = selectedId === node.id;
+      if (!isSelected && (camera.k < 1.6 || index >= labelBudget)) return;
+      const screenX = camera.x + (node.x - size.width / 2) * camera.k;
+      const screenY = camera.y + (node.y - size.height / 2) * camera.k;
+      const width = clamp(node.name.length * 5.9 + 18, 42, 154);
+      const height = 18;
+      const box = {
+        left: screenX + 8,
+        top: screenY - height / 2,
+        right: screenX + 8 + width,
+        bottom: screenY + height / 2,
+      };
+      const overlaps = boxes.some(
+        other =>
+          box.left < other.right &&
+          box.right > other.left &&
+          box.top < other.bottom &&
+          box.bottom > other.top
+      );
+      if (overlaps && !isSelected) return;
+      labels.add(node.id);
+      boxes.push(box);
+    });
+    return labels;
+  }, [camera, selectedId, size.height, size.width, visibleNodes]);
 
   useEffect(() => {
     if (restoredRef.current) return;
@@ -327,7 +393,7 @@ export default function WorldMapExplorer() {
     return () => window.clearTimeout(timeout);
   }, [camera, nearbyMode, release, selectedId]);
 
-  const zoomAt = (px: number, py: number, factor: number) => {
+  const zoomAt = (px: number, py: number, factor: number, commit = false) => {
     const current = cameraRef.current;
     const nextK = clamp(current.k * factor, MIN_ZOOM, MAX_ZOOM);
     const mapX = (px - current.x) / current.k + size.width / 2;
@@ -338,7 +404,7 @@ export default function WorldMapExplorer() {
         x: px - (mapX - size.width / 2) * nextK,
         y: py - (mapY - size.height / 2) * nextK,
       },
-      true
+      commit
     );
   };
 
@@ -480,7 +546,7 @@ export default function WorldMapExplorer() {
       Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 32;
     if (isDoubleTap) {
       const rect = event.currentTarget.getBoundingClientRect();
-      zoomAt(event.clientX - rect.left, event.clientY - rect.top, 1.8);
+      zoomAt(event.clientX - rect.left, event.clientY - rect.top, 1.8, true);
       suppressClickUntilRef.current = now + 260;
       lastTapRef.current = null;
     } else {
@@ -500,8 +566,15 @@ export default function WorldMapExplorer() {
     zoomAt(
       event.clientX - rect.left,
       event.clientY - rect.top,
-      Math.exp(-event.deltaY * 0.0015)
+      Math.exp(-event.deltaY * 0.0015),
+      false
     );
+    if (wheelCommitRef.current !== null)
+      window.clearTimeout(wheelCommitRef.current);
+    wheelCommitRef.current = window.setTimeout(() => {
+      wheelCommitRef.current = null;
+      commitCamera();
+    }, 140);
   };
   if (error)
     return (
@@ -620,20 +693,28 @@ export default function WorldMapExplorer() {
               </path>
             );
           })}
-          {nodes.map(node => {
+          {visibleNodes.map((node, index) => {
             const visible = !nearbyMode || nearbyIds.has(node.id);
             if (!visible) return null;
             const isSelected = selectedId === node.id;
             const total = node.total ?? 0;
-            const radius = isSelected
-              ? 7 / camera.k
-              : (3.2 + (Math.log10(total + 1) / Math.log10(maxTotal + 1)) * 8) /
-                camera.k;
+            const screenRadius = isSelected
+              ? 8
+              : clamp(
+                  3.4 +
+                    (Math.log10(total + 1) / Math.log10(maxTotal + 1)) * 7 +
+                    Math.log2(Math.max(1, camera.k)) * 0.9,
+                  3.4,
+                  12
+                );
+            const radius = screenRadius / camera.k;
+            const showGlow = isSelected || (camera.k > 1.2 && index < 80);
             const fill = isSelected
               ? "#ffbf69"
               : total > 0
                 ? "#45d7c0"
                 : "#647c91";
+            const showLabel = labelIds.has(node.id);
             return (
               <g
                 key={`node-${node.id}`}
@@ -655,7 +736,7 @@ export default function WorldMapExplorer() {
                   r={radius * 2.6}
                   fill={fill}
                   opacity={isSelected ? 0.17 : 0.08}
-                  filter="url(#atlas-world-glow)"
+                  filter={showGlow ? "url(#atlas-world-glow)" : undefined}
                 />
                 <circle
                   cx={node.x}
@@ -665,11 +746,17 @@ export default function WorldMapExplorer() {
                   stroke={isSelected ? "#fff4d8" : "#092033"}
                   strokeWidth={1 / camera.k}
                 />
-                {(camera.k > 1.6 || isSelected) && (
+                {showLabel && (
                   <text
                     x={node.x + radius * 1.6}
                     y={node.y + 3 / camera.k}
-                    fontSize={11 / camera.k}
+                    fontSize={
+                      clamp(
+                        11 + Math.log2(Math.max(1, camera.k)) * 1.6,
+                        11,
+                        17
+                      ) / camera.k
+                    }
                     fontWeight={700}
                     fill={isSelected ? "#fff2d4" : "#b9e9e1"}
                     style={{

@@ -496,6 +496,7 @@ export default function InfiniteAtlas({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const restoredHash = useRef(false);
   const cameraRef = useRef<Camera>({ x: WORLD_CX, y: WORLD_CY, k: 0.22 });
+  const paintedCameraRef = useRef<Camera | null>(null);
   const queuedCameraRef = useRef<Camera | null>(null);
   const cameraFrameRef = useRef<number | null>(null);
   const pointersRef = useRef(new Map<number, { x: number; y: number }>());
@@ -550,6 +551,16 @@ export default function InfiniteAtlas({
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
 
+  const applyCanvasCamera = (next: Camera) => {
+    const canvas = canvasRef.current;
+    const base = paintedCameraRef.current;
+    if (!canvas || !base) return;
+    const scale = next.k / base.k;
+    const translateX = (base.x - next.x) * next.k;
+    const translateY = (base.y - next.y) * next.k;
+    canvas.style.transformOrigin = "50% 50%";
+    canvas.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+  };
   const queueCamera = (next: Camera) => {
     cameraRef.current = next;
     queuedCameraRef.current = next;
@@ -557,7 +568,7 @@ export default function InfiniteAtlas({
     cameraFrameRef.current = window.requestAnimationFrame(() => {
       cameraFrameRef.current = null;
       const queued = queuedCameraRef.current;
-      if (queued) setCamera(queued);
+      if (queued) applyCanvasCamera(queued);
     });
   };
   const commitCamera = () => setCamera(cameraRef.current);
@@ -760,6 +771,52 @@ export default function InfiniteAtlas({
     clamp(node.radius * Math.pow(camera.k / 0.18, 0.4), 1.7, 38);
   const visualLabelSize = (node: AtlasNode) =>
     clamp(node.labelBase * Math.pow(camera.k / 0.18, 0.17), 9.5, 23);
+  const pickableNodes = useMemo(() => {
+    const budget = camera.k < 0.32 ? 520 : camera.k < 0.72 ? 1100 : 2200;
+    return nodes
+      .filter(nodeVisible)
+      .filter(node => {
+        const screen = screenPoint(node);
+        return (
+          screen.x >= -120 &&
+          screen.x <= size.width + 120 &&
+          screen.y >= -120 &&
+          screen.y <= size.height + 120
+        );
+      })
+      .sort((a, b) => {
+        const aPriority =
+          selected?.key === a.key
+            ? 5
+            : pinned.has(a.key)
+              ? 4
+              : visited.has(a.key)
+                ? 3
+                : 1;
+        const bPriority =
+          selected?.key === b.key
+            ? 5
+            : pinned.has(b.key)
+              ? 4
+              : visited.has(b.key)
+                ? 3
+                : 1;
+        return bPriority - aPriority || b.radius - a.radius;
+      })
+      .slice(0, budget);
+  }, [
+    camera,
+    focusCode,
+    hoveredKey,
+    layer,
+    nodes,
+    pinned,
+    revealDepth,
+    selected,
+    size.height,
+    size.width,
+    visited,
+  ]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -767,6 +824,10 @@ export default function InfiniteAtlas({
     const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     canvas.width = Math.floor(size.width * dpr);
     canvas.height = Math.floor(size.height * dpr);
+    canvas.style.transform = "none";
+    canvas.style.transformOrigin = "50% 50%";
+    canvas.style.willChange = "transform";
+    paintedCameraRef.current = camera;
     canvas.style.width = `${size.width}px`;
     canvas.style.height = `${size.height}px`;
     const context = canvas.getContext("2d");
@@ -794,8 +855,9 @@ export default function InfiniteAtlas({
       context.lineTo(size.width, y);
       context.stroke();
     }
+    const renderNodes = pickableNodes;
     if (layer === "industries" && !focusCode) {
-      const anchors = nodes
+      const anchors = renderNodes
         .filter(node => node.taxonomy === "NAICS 2022" && node.depth <= 2)
         .filter(nodeVisible);
       anchors.forEach(node => {
@@ -882,13 +944,12 @@ export default function InfiniteAtlas({
       const parent = screenPoint(selected);
       context.strokeStyle = "rgba(15,118,110,.32)";
       context.lineWidth = clamp(1.6 / Math.sqrt(camera.k), 0.5, 1.6);
-      nodes
+      renderNodes
         .filter(
           node =>
             node.code?.startsWith(focusCode) &&
             node.code !== focusCode &&
-            node.depth <= selected.depth + 1 &&
-            nodeVisible(node)
+            node.depth <= selected.depth + 1
         )
         .slice(0, 180)
         .forEach(node => {
@@ -903,7 +964,7 @@ export default function InfiniteAtlas({
       const center = screenPoint(makeOccupationNode(currentOccupation));
       context.strokeStyle = "rgba(47,131,126,.17)";
       context.lineWidth = clamp(1.4 / Math.sqrt(camera.k), 0.45, 1.4);
-      nodes.forEach(node => {
+      renderNodes.slice(0, 240).forEach(node => {
         const child = screenPoint(node);
         context.beginPath();
         context.moveTo(center.x, center.y);
@@ -940,14 +1001,12 @@ export default function InfiniteAtlas({
             : visited.has(node.key)
               ? 3
               : 2;
-    const candidates = nodes
-      .filter(nodeVisible)
-      .sort(
-        (a, b) =>
-          labelPriority(b) - labelPriority(a) ||
-          a.depth - b.depth ||
-          b.radius - a.radius
-      );
+    const candidates = renderNodes.sort(
+      (a, b) =>
+        labelPriority(b) - labelPriority(a) ||
+        a.depth - b.depth ||
+        b.radius - a.radius
+    );
     candidates.forEach(node => {
       const screen = screenPoint(node);
       if (
@@ -1065,8 +1124,7 @@ export default function InfiniteAtlas({
     const px = clientX - rect.left;
     const py = clientY - rect.top;
     return (
-      nodes
-        .filter(nodeVisible)
+      pickableNodes
         .map(node => ({ node, screen: screenPoint(node) }))
         .filter(
           ({ node, screen }) =>

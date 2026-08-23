@@ -1,6 +1,14 @@
 // Industry Niche Atlas style reminder: editorial cartography, warm mineral paper, ink typography, oxidized teal paths, coral caveats, ochre evidence.
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ArrowRight,
   BookOpen,
@@ -17,9 +25,11 @@ import {
   Sparkles,
   Target,
 } from "lucide-react";
-import InfiniteAtlas from "@/components/InfiniteAtlas";
-import AtlasRoadmaps, { type RoadmapContext } from "@/components/AtlasRoadmaps";
-import WorldMapExplorer from "@/components/WorldMapExplorer";
+import type { RoadmapContext } from "@/components/AtlasRoadmaps";
+
+const InfiniteAtlas = lazy(() => import("@/components/InfiniteAtlas"));
+const AtlasRoadmaps = lazy(() => import("@/components/AtlasRoadmaps"));
+const WorldMapExplorer = lazy(() => import("@/components/WorldMapExplorer"));
 
 type SourceRef = {
   id: string;
@@ -83,6 +93,7 @@ type Release = {
   taxonomies: Taxonomy[];
   occupations: Occupation[];
 };
+type Catalog = Pick<Release, "taxonomies" | "occupations">;
 
 const money = (value?: number | null) =>
   value == null ? "Not available" : `$${Math.round(value).toLocaleString()}`;
@@ -851,7 +862,47 @@ function NetworkIcon() {
   return <GitBranch className="h-4 w-4 text-[#0f766e]" />;
 }
 
-function AtlasShell({ data }: { data: Release }) {
+function CatalogGate({
+  onLoad,
+  loading,
+}: {
+  onLoad: () => void;
+  loading: boolean;
+}) {
+  return (
+    <section className="grid min-h-[calc(100vh-68px)] place-items-center bg-[#f8f5ec] px-6 py-20 text-center">
+      <div className="max-w-md">
+        <div className="eyebrow text-[#0f766e]">On-demand source catalog</div>
+        <h1 className="mt-4 font-display text-4xl leading-none sm:text-5xl">
+          {loading ? "Preparing the source field…" : "Load the source catalog when needed."}
+        </h1>
+        <p className="mt-5 text-sm leading-6 text-[#666960]">
+          World can start without occupation and taxonomy records. Load the larger catalog only when opening Graph, Directory, or Roadmaps.
+        </p>
+        {!loading && (
+          <button
+            onClick={onLoad}
+            className="mt-7 rounded-full bg-[#0f766e] px-5 py-3 text-sm font-semibold text-white hover:bg-[#0b625c]"
+          >
+            Load catalog
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AtlasShell({
+  manifest,
+  catalog,
+  onLoadCatalog,
+  catalogLoading,
+}: {
+  manifest: Manifest;
+  catalog: Catalog | null;
+  onLoadCatalog: () => void;
+  catalogLoading: boolean;
+}) {
   const [tab, setTab] = useState<"graph" | "world" | "directory" | "roadmaps">(
     () =>
       new URLSearchParams(window.location.hash.replace(/^#/, "")).get(
@@ -860,9 +911,17 @@ function AtlasShell({ data }: { data: Release }) {
         ? "world"
         : "graph"
   );
-  const [selectedOccupation, setSelectedOccupation] = useState(
-    data.occupations[0]
-  );
+  const [selectedOccupationId, setSelectedOccupationId] = useState<string | null>(null);
+  const selectedOccupation =
+    catalog?.occupations.find(item => item.id === selectedOccupationId) ??
+    catalog?.occupations[0] ??
+    null;
+  const data = catalog ? { manifest, ...catalog } : null;
+  useEffect(() => {
+    if (catalog && !selectedOccupationId) {
+      setSelectedOccupationId(catalog.occupations[0]?.id ?? null);
+    }
+  }, [catalog, selectedOccupationId]);
   const [roadmapContext, setRoadmapContext] = useState<RoadmapContext | null>(
     null
   );
@@ -883,7 +942,10 @@ function AtlasShell({ data }: { data: Release }) {
             <button
               role="tab"
               aria-selected={tab === "graph"}
-              onClick={() => setTab("graph")}
+              onClick={() => {
+                setTab("graph");
+                onLoadCatalog();
+              }}
               className={`rounded-full px-3 py-2 text-xs font-semibold transition sm:px-4 ${tab === "graph" ? "bg-[#242822] text-white shadow-sm" : "text-[#666960] hover:text-[#242822]"}`}
             >
               Graph
@@ -905,7 +967,10 @@ function AtlasShell({ data }: { data: Release }) {
             <button
               role="tab"
               aria-selected={tab === "directory"}
-              onClick={() => setTab("directory")}
+              onClick={() => {
+                setTab("directory");
+                onLoadCatalog();
+              }}
               className={`rounded-full px-3 py-2 text-xs font-semibold transition sm:px-4 ${tab === "directory" ? "bg-[#0f766e] text-white shadow-sm" : "text-[#666960] hover:text-[#242822]"}`}
             >
               Directory
@@ -913,27 +978,35 @@ function AtlasShell({ data }: { data: Release }) {
           </div>
           <div className="hidden items-center gap-2 sm:flex">
             <Badge>
-              {integer(data.manifest.counts.occupations)} occupations
+              {integer(manifest.counts.occupations)} occupations
             </Badge>
             <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-[#777970]">
-              release {data.manifest.releaseId}
+              release {manifest.releaseId}
             </span>
           </div>
         </div>
       </header>
       <main>
-        {tab === "graph" ? (
-          <div className="min-h-[calc(100vh-68px)]">
-            <InfiniteAtlas data={data} onOpenRoadmap={openRoadmap} />
-          </div>
-        ) : tab === "world" ? (
-          <WorldMapExplorer />
+        {tab === "world" ? (
+          <Suspense fallback={<CatalogGate onLoad={() => undefined} loading />}>
+            <WorldMapExplorer />
+          </Suspense>
+        ) : !data ? (
+          <CatalogGate onLoad={onLoadCatalog} loading={catalogLoading} />
+        ) : tab === "graph" ? (
+          <Suspense fallback={<CatalogGate onLoad={onLoadCatalog} loading={catalogLoading} />}>
+            <div className="min-h-[calc(100vh-68px)]">
+              <InfiniteAtlas data={data} onOpenRoadmap={openRoadmap} />
+            </div>
+          </Suspense>
         ) : tab === "roadmaps" ? (
-          <AtlasRoadmaps
-            data={data}
-            context={roadmapContext}
-            onReturnToGraph={() => setTab("graph")}
-          />
+          <Suspense fallback={<CatalogGate onLoad={onLoadCatalog} loading={catalogLoading} />}>
+            <AtlasRoadmaps
+              data={data}
+              context={roadmapContext}
+              onReturnToGraph={() => setTab("graph")}
+            />
+          </Suspense>
         ) : (
           <div>
             <div className="container border-b border-[#d8d5c8] py-10">
@@ -952,8 +1025,8 @@ function AtlasShell({ data }: { data: Release }) {
             <TaxonomyExplorer data={data} />
             <OccupationExplorer
               data={data}
-              selected={selectedOccupation}
-              setSelected={setSelectedOccupation}
+              selected={selectedOccupation ?? data.occupations[0]}
+              setSelected={occupation => setSelectedOccupationId(occupation.id)}
             />
             <Sources data={data} />
           </div>
@@ -964,19 +1037,47 @@ function AtlasShell({ data }: { data: Release }) {
 }
 
 export default function RealHome() {
-  const [data, setData] = useState<Release>(null as unknown as Release);
+  const [manifest, setManifest] = useState<Manifest | null>(null);
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedOccupation, setSelectedOccupation] =
-    useState<Occupation | null>(null);
-  useEffect(() => {
-    Promise.all([
-      fetch("/data/manifest.json").then(response => response.json()),
-      fetch("/data/taxonomies.json").then(response => response.json()),
-      fetch("/data/occupations.json").then(response => response.json()),
+  const catalogPromise = useRef<Promise<void> | null>(null);
+  const loadCatalog = () => {
+    if (catalog || catalogPromise.current) return;
+    setCatalogLoading(true);
+    const promise = Promise.all([
+      fetch("/data/taxonomies.json").then(response => {
+        if (!response.ok) throw new Error("Taxonomy release unavailable");
+        return response.json() as Promise<Taxonomy[]>;
+      }),
+      fetch("/data/occupations.json").then(response => {
+        if (!response.ok) throw new Error("Occupation release unavailable");
+        return response.json() as Promise<Occupation[]>;
+      }),
     ])
-      .then(([manifest, taxonomies, occupations]) =>
-        setData({ manifest, taxonomies, occupations })
+      .then(([taxonomies, occupations]) => setCatalog({ taxonomies, occupations }))
+      .catch(() =>
+        setError(
+          "The source catalog could not be loaded. Check that the generated data files are present."
+        )
       )
+      .finally(() => {
+        catalogPromise.current = null;
+        setCatalogLoading(false);
+      });
+    catalogPromise.current = promise;
+  };
+  useEffect(() => {
+    fetch("/data/manifest.json")
+      .then(response => {
+        if (!response.ok) throw new Error("Manifest unavailable");
+        return response.json() as Promise<Manifest>;
+      })
+      .then(nextManifest => {
+        setManifest(nextManifest);
+        const initialTab = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("world") === "1" ? "world" : "graph";
+        if (initialTab !== "world") loadCatalog();
+      })
       .catch(() =>
         setError(
           "The real-data release could not be loaded. Check that the generated data files are present."
@@ -996,149 +1097,21 @@ export default function RealHome() {
         </div>
       </div>
     );
-  if (!data)
+  if (!manifest)
     return (
       <div className="grid min-h-screen place-items-center bg-[#f8f5ec]">
         <div className="animate-pulse font-display text-3xl text-[#0f766e]">
-          Loading the source release…
+          Loading the release manifest…
         </div>
       </div>
     );
-  return <AtlasShell data={data} />;
-  const activeOccupation = selectedOccupation ?? data.occupations[0];
   return (
-    <div id="top" className="min-h-screen bg-[#f8f5ec] text-[#242822]">
-      <header className="sticky top-0 z-40 border-b border-[#d8d5c8]/80 bg-[#f8f5ec]/90 backdrop-blur-xl">
-        <div className="container flex h-[70px] items-center justify-between">
-          <Brand />
-          <nav className="hidden items-center gap-6 text-sm text-[#65665d] md:flex">
-            <a href="#atlas-canvas" className="nav-link">
-              Atlas
-            </a>
-            <a href="#sources" className="nav-link">
-              Sources
-            </a>
-          </nav>
-          <div className="flex items-center gap-2">
-            <a
-              href="#atlas-canvas"
-              className="rounded-full bg-[#0f766e] px-4 py-2 text-xs font-semibold text-white transition hover:bg-[#0b625c]"
-            >
-              Open atlas <ArrowRight className="ml-1 inline h-3.5 w-3.5" />
-            </a>
-          </div>
-        </div>
-      </header>
-      <main>
-        <section className="relative overflow-hidden">
-          <div
-            className="absolute inset-0 opacity-25"
-            style={{
-              backgroundImage:
-                "radial-gradient(circle at 68% 20%, #0f766e 0 1px, transparent 1.5px), radial-gradient(circle at 78% 74%, #c75b4a 0 1px, transparent 1.5px)",
-              backgroundSize: "44px 44px, 76px 76px",
-            }}
-          />
-          <div className="absolute inset-0 bg-gradient-to-r from-[#f8f5ec] via-[#f8f5ec]/95 to-[#f8f5ec]/60" />
-          <div className="container relative grid min-h-[500px] items-center gap-12 py-20 lg:grid-cols-[1.05fr_.95fr] lg:py-28">
-            <div>
-              <div className="eyebrow flex items-center gap-2 text-[#0f766e]">
-                <span className="h-px w-8 bg-[#0f766e]" /> Real source release ·{" "}
-                {data.manifest.releaseId}
-              </div>
-              <h1 className="mt-6 max-w-4xl font-display text-[clamp(3.7rem,8vw,7.5rem)] leading-[0.84] tracking-[-0.065em]">
-                A world of work.
-                <br />
-                <em className="text-[#0f766e]">At every scale.</em>
-              </h1>
-              <p className="mt-8 max-w-xl text-lg leading-8 text-[#5c5e55]">
-                One source-backed map. Scroll to zoom, drag to roam, and click a
-                cluster until an official record becomes a task someone actually
-                performs.
-              </p>
-              <div className="mt-9 flex flex-wrap gap-3">
-                <a
-                  href="#atlas-canvas"
-                  className="rounded-full bg-[#242822] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#0f766e]"
-                >
-                  Enter the infinite atlas{" "}
-                  <ArrowRight className="ml-2 inline h-4 w-4" />
-                </a>
-                <a
-                  href="#sources"
-                  className="rounded-full border border-[#bdb9ac] bg-[#f8f5ec]/80 px-5 py-3 text-sm font-semibold text-[#454740] transition hover:border-[#0f766e]"
-                >
-                  Read the sources
-                </a>
-              </div>
-              <div className="mt-14 flex flex-wrap gap-2">
-                <Badge>
-                  {integer(data.manifest.counts.occupations)} occupations
-                </Badge>
-                <Badge tone="ochre">
-                  {integer(data.manifest.counts.taskStatementCount)} task
-                  statements
-                </Badge>
-                <Badge tone="ink">
-                  {integer(data.manifest.counts.naics)} NAICS records
-                </Badge>
-                <Badge tone="coral">
-                  {integer(data.manifest.counts.isic)} ISIC records
-                </Badge>
-              </div>
-            </div>
-            <div className="relative hidden lg:block">
-              <div className="hero-note absolute right-0 top-0 rotate-3">
-                <div className="eyebrow text-[#c75b4a]">
-                  Field note / map rules
-                </div>
-                <p className="mt-4 font-display text-2xl leading-tight text-[#353831]">
-                  Zoom is the first filter.
-                </p>
-                <p className="mt-4 text-sm leading-6 text-[#6b6c64]">
-                  At world scale you see clusters. At record scale you see
-                  names. Search only moves the camera to a place that interests
-                  you.
-                </p>
-                <div className="mt-6 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[#0f766e]">
-                  <Map className="h-4 w-4" /> one canvas / many scales
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-        <InfiniteAtlas data={data} />
-        <Sources data={data} />
-        <section className="border-t border-[#d8d5c8] bg-[#f0ede3]">
-          <div className="container flex flex-col justify-between gap-7 py-12 sm:flex-row sm:items-center">
-            <div>
-              <div className="eyebrow text-[#0f766e]">Refresh path</div>
-              <p className="mt-3 font-display text-3xl">
-                Download → validate → build → deploy.
-              </p>
-            </div>
-            <a
-              href="https://www.onetcenter.org/database.html"
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-full bg-[#c75b4a] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#a94c3e]"
-            >
-              View source release{" "}
-              <ExternalLink className="ml-2 inline h-4 w-4" />
-            </a>
-          </div>
-        </section>
-      </main>
-      <footer className="bg-[#242822] text-[#b8b9ae]">
-        <div className="container flex flex-col justify-between gap-4 py-8 text-xs sm:flex-row sm:items-center">
-          <Brand />
-          <div className="flex flex-wrap gap-x-5 gap-y-2">
-            <span>Real source release</span>
-            <span>Infinite canvas</span>
-            <span>Provenance first</span>
-          </div>
-        </div>
-      </footer>
-    </div>
+    <AtlasShell
+      manifest={manifest}
+      catalog={catalog}
+      onLoadCatalog={loadCatalog}
+      catalogLoading={catalogLoading}
+    />
   );
+
 }

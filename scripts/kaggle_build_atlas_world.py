@@ -333,11 +333,11 @@ def main() -> None:
             "releaseId": manifest["releaseId"],
             "coordinateSystem": manifest["coordinateSystem"],
             "geometryPolicy": manifest["geometryPolicy"],
-                        "layers": {layer: {
+            "layers": {layer: {
                 "featureCount": manifest["layers"][layer]["featureCount"],
                 "tileCount": manifest["layers"][layer]["tileCount"],
                 "tileBytes": manifest["layers"][layer]["tileBytes"],
-            } for layer in required_layers},
+            } for layer in sorted(manifest.get("layers", {}))},
 
 
         }, indent=2), flush=True)

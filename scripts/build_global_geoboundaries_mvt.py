@@ -82,6 +82,13 @@ class GeometryRejected(Exception):
         self.audit = audit or {}
 
 
+def source_file_label(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -710,7 +717,7 @@ def build_points_layer(
     audit_metadata = write_audit(output_root, audit_rows, layer)
     point_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=True, workers=workers)
     point_metadata.update({
-        "sourceFile": str(source_path.relative_to(ROOT)),
+        "sourceFile": source_file_label(source_path),
         "sourceSha256": source_sha256,
         "sourceUrl": source_url,
         "sourceMetadata": [source_metadata],
@@ -738,7 +745,7 @@ def build_layer(
     polygon_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=False, workers=workers)
     label_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=True, workers=workers)
     source_metadata = {
-        "sourceFile": str(source_path.relative_to(ROOT)),
+        "sourceFile": source_file_label(source_path),
         "sourceSha256": sha256_file(source_path),
         "sourceUrl": source_url or SOURCE_URLS.get(layer, SOURCE_URLS["adm2"]),
         "sourceMetadata": source_metadata or [],

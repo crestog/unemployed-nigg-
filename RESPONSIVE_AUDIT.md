@@ -57,3 +57,11 @@ A live two-finger pinch changes the SVG scale from `1` to `2` and updates the tr
 After clearing and reloading, the World page hydrates with the persisted pinch camera (`wxz=2.000`) and displays the focused zoomed map correctly. The URL camera persistence works across reloads. The screenshot’s red numbered boxes are browser annotation markers, not application UI.
 
 A clean reload after clearing the console shows only the React DevTools informational message; the previous duplicate-key warning flood does not recur. The earlier warnings were stale entries from before the key fix.
+
+## Production phone verification
+
+The Worker returned HTTP 200 and production phone screenshots loaded after the responsive release. The production World tab now shows the map, compact search field, touch instructions, field count, and vertical zoom/reset controls within the 390 × 844 viewport. The production Graph tab shows the compact breadcrumb, map toolbar, search field, layer chips, and zoom controls without header collision. Compare roles is visible below the Graph toolbar rather than covering navigation.
+
+Chromium emitted only its unrelated Google registration warnings during headless capture; no application error or exception was reported.
+
+The production Roadmaps catalog fits the phone viewport with a compact hero, stacked calls to action, three stat cards, and a clean transition into the catalog search. The production AI generator fits with no global compare utility covering the form; its topic input, format cards, optional checkbox, and Generate button remain readable and tappable.

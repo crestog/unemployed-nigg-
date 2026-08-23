@@ -26,6 +26,21 @@ def geometry_summary(features):
     return dict(types), coordinates
 
 
+def coordinate_extent(geometry):
+    points = []
+    def walk(value):
+        if isinstance(value, list) and len(value) >= 2 and all(isinstance(item, (int, float)) for item in value[:2]):
+            points.append((value[0], value[1]))
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+    walk((geometry or {}).get('coordinates', []))
+    if not points:
+        return None
+    xs, ys = zip(*points)
+    return {'minLng': min(xs), 'maxLng': max(xs), 'minLat': min(ys), 'maxLat': max(ys), 'pointCount': len(points)}
+
+
 def feature_layer(name, layer):
     features = layer if isinstance(layer, list) else layer.get('features', [])
     print(f'{name}.container', type(layer).__name__)
@@ -35,7 +50,10 @@ def feature_layer(name, layer):
     first = features[0]
     print(f'{name}.first_keys', sorted(first.keys()))
     print(f'{name}.first_properties', sorted((first.get('properties') or {}).keys()))
+    print(f'{name}.feature_samples', [{key: item.get(key) for key in ('id', 'name', 'isoCode')} for item in features[:5]])
     print(f'{name}.geometry_types', geometry_summary(features)[0])
+    print(f'{name}.first_extent', coordinate_extent(first.get('geometry')))
+    print(f'{name}.sample_extents', [coordinate_extent(item.get('geometry')) for item in features[:3]])
     props = [feature.get('properties') or {} for feature in features]
     for key in ('id', 'name', 'isoCode', 'admin1Code', 'admin2Code', 'latitude', 'longitude', 'population', 'featureCode'):
         values = [item.get(key) for item in props if item.get(key) not in (None, '')]

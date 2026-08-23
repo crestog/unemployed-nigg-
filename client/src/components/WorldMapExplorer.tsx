@@ -7,7 +7,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { feature } from "topojson-client";
-import { geoNaturalEarth1, geoPath } from "d3-geo";
+import { geoBounds, geoCentroid, geoContains, geoNaturalEarth1, geoPath } from "d3-geo";
 import worldTopology from "world-atlas/countries-50m.json";
 import {
   ChevronLeft,
@@ -72,6 +72,79 @@ type WorldNode = {
   record: LegalRecord | null;
   feature: MapFeature;
 };
+type IndiaBoundary = {
+  id: string;
+  name: string;
+  isoCode: string | null;
+  geometry: GeoJSON.Geometry;
+};
+type IndiaLocality = {
+  id: string;
+  name: string;
+  asciiName: string;
+  latitude: number;
+  longitude: number;
+  featureCode: string;
+  admin1Code: string | null;
+  admin2Code: string | null;
+  population: number;
+  modificationDate: string | null;
+};
+type IndiaGeography = {
+  releaseId: string;
+  generatedAt: string;
+  jurisdiction: { isoAlpha2: string; isoAlpha3: string; label: string };
+  layers: {
+    adm1: {
+      label: string;
+      source: GeographySource;
+      features: IndiaBoundary[];
+      precisionNotice: string;
+    };
+    adm2: {
+      label: string;
+      source: GeographySource;
+      features: IndiaBoundary[];
+      precisionNotice: string;
+    };
+    localities: {
+      label: string;
+      source: GeographySource;
+      records: IndiaLocality[];
+      precisionNotice: string;
+    };
+  };
+};
+type GeographySource = {
+  publisher: string;
+  sourceUrl: string;
+  license: string;
+  termsUrl?: string;
+  extract?: string | null;
+};
+type GeoEntityKind = "country" | "adm1" | "adm2" | "locality";
+type GeoSelection = {
+  kind: GeoEntityKind;
+  id: string;
+  name: string;
+  parentId: string | null;
+  source: GeographySource;
+  description: string;
+  point: { x: number; y: number };
+  population?: number;
+  featureCode?: string;
+};
+type GeoSearchResult = {
+  type: "geo";
+  kind: Exclude<GeoEntityKind, "country">;
+  id: string;
+  name: string;
+  parentId: string | null;
+  point: { x: number; y: number };
+  source: GeographySource;
+  population?: number;
+  featureCode?: string;
+};
 
 type HoverState = { id: string } | null;
 
@@ -98,6 +171,47 @@ const formatDate = (value: string | null | undefined) =>
     : "Unavailable";
 const shortText = (value: string, max: number) =>
   value.length > max ? `${value.slice(0, max - 1)}…` : value;
+const INDIA_ID = "356";
+const INDIA_ADM1_ZOOM = 2.4;
+const INDIA_ADM2_ZOOM = 6.2;
+const INDIA_LOCALITY_ZOOM = 10.2;
+const geoKindLabel = (kind: GeoEntityKind) =>
+  kind === "country"
+    ? "Country"
+    : kind === "adm1"
+      ? "State / union territory"
+      : kind === "adm2"
+        ? "District"
+        : "City / locality";
+const normalizeD3Geometry = (geometry: GeoJSON.Geometry): GeoJSON.Geometry => {
+  if (geometry.type === "Polygon") {
+    return {
+      ...geometry,
+      coordinates: geometry.coordinates.map(ring => [...ring].reverse()),
+    };
+  }
+  if (geometry.type === "MultiPolygon") {
+    return {
+      ...geometry,
+      coordinates: geometry.coordinates.map(polygon =>
+        polygon.map(ring => [...ring].reverse())
+      ),
+    };
+  }
+  if (geometry.type === "GeometryCollection") {
+    return {
+      ...geometry,
+      geometries: geometry.geometries.map(normalizeD3Geometry),
+    };
+  }
+  return geometry;
+};
+const boundaryToFeature = (boundary: IndiaBoundary): MapFeature => ({
+  type: "Feature",
+  id: boundary.id,
+  properties: { name: boundary.name },
+  geometry: normalizeD3Geometry(boundary.geometry),
+});
 
 function overlayTarget(target: EventTarget | null) {
   return (
@@ -141,7 +255,11 @@ export default function WorldMapExplorer() {
   const dragRef = useRef<{ pointer: number; x: number; y: number } | null>(
     null
   );
+  const indiaRequestedRef = useRef(false);
   const [release, setRelease] = useState<WorldRelease | null>(null);
+  const [indiaGeography, setIndiaGeography] = useState<IndiaGeography | null>(null);
+  const [indiaGeoError, setIndiaGeoError] = useState<string | null>(null);
+  const [geoSelection, setGeoSelection] = useState<GeoSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 1280, height: 760 });
   const [camera, setCamera] = useState<Camera>({ x: 640, y: 380, k: 1 });
@@ -283,6 +401,68 @@ export default function WorldMapExplorer() {
     () => new Map(nodes.map(node => [node.id, node])),
     [nodes]
   );
+  const indiaNode = nodeById.get(INDIA_ID) ?? null;
+  const indiaAdm1Features = useMemo(
+    () => indiaGeography?.layers.adm1.features ?? [],
+    [indiaGeography]
+  );
+  const indiaAdm2Features = useMemo(
+    () => indiaGeography?.layers.adm2.features ?? [],
+    [indiaGeography]
+  );
+  const indiaAdm2ParentById = useMemo(() => {
+    if (!indiaAdm1Features.length || !indiaAdm2Features.length)
+      return new Map<string, string | null>();
+    return new Map(
+      indiaAdm2Features.map(district => {
+        const [longitude, latitude] = geoCentroid(boundaryToFeature(district));
+        const parent = indiaAdm1Features.find(state =>
+          geoContains(boundaryToFeature(state), [longitude, latitude])
+        );
+        return [district.id ? String(district.id) : "", parent?.id ? String(parent.id) : null] as const;
+      })
+    );
+  }, [indiaAdm1Features, indiaAdm2Features]);
+  const indiaLocalityPoints = useMemo(
+    () =>
+      (indiaGeography?.layers.localities.records ?? []).flatMap(record => {
+        const point = projection([record.longitude, record.latitude]);
+        if (!point || !point.every(Number.isFinite)) return [];
+        return [{ record, x: point[0], y: point[1] }];
+      }),
+    [indiaGeography, projection]
+  );
+  const indiaInView = useMemo(() => {
+    if (!indiaNode) return false;
+    const screenX = camera.x + (indiaNode.x - size.width / 2) * camera.k;
+    const screenY = camera.y + (indiaNode.y - size.height / 2) * camera.k;
+    return (
+      screenX >= -size.width * 0.45 &&
+      screenX <= size.width * 1.45 &&
+      screenY >= 54 - size.height * 0.45 &&
+      screenY <= size.height * 1.45
+    );
+  }, [camera, indiaNode, size.height, size.width]);
+  useEffect(() => {
+    if (indiaGeography || indiaRequestedRef.current || !indiaNode) return;
+    const screenX = camera.x + (indiaNode.x - size.width / 2) * camera.k;
+    const screenY = camera.y + (indiaNode.y - size.height / 2) * camera.k;
+    const nearViewport =
+      camera.k >= 1.45 &&
+      screenX >= -size.width * 0.35 &&
+      screenX <= size.width * 1.35 &&
+      screenY >= -size.height * 0.35 &&
+      screenY <= size.height * 1.35;
+    if (!nearViewport) return;
+    indiaRequestedRef.current = true;
+    fetch("/data/world-india-geography.json")
+      .then(response => {
+        if (!response.ok) throw new Error("India geography source unavailable");
+        return response.json() as Promise<IndiaGeography>;
+      })
+      .then(setIndiaGeography)
+      .catch((cause: Error) => setIndiaGeoError(cause.message));
+  }, [camera, indiaGeography, indiaNode, size.height, size.width]);
   const maxTotal = useMemo(
     () => Math.max(1, ...nodes.map(node => node.total ?? 0)),
     [nodes]
@@ -385,6 +565,192 @@ export default function WorldMapExplorer() {
     });
     return labels;
   }, [camera, selectedId, size.height, size.width, visibleNodes]);
+  const countryLabelIds = useMemo(() => {
+    const labels = new Set<string>();
+    if (camera.k > 2.45) return labels;
+    const boxes: { left: number; top: number; right: number; bottom: number }[] = [];
+    const candidates = [...nodes]
+      .sort((a, b) => (b.total ?? -1) - (a.total ?? -1))
+      .slice(0, camera.k < 1.35 ? 52 : 36);
+    candidates.forEach(node => {
+      const screenX = camera.x + (node.x - size.width / 2) * camera.k;
+      const screenY = camera.y + (node.y - size.height / 2) * camera.k;
+      const width = clamp(node.name.length * 5.2 + 12, 28, 118);
+      const height = 18;
+      const box = {
+        left: screenX - width / 2,
+        top: screenY - height / 2,
+        right: screenX + width / 2,
+        bottom: screenY + height / 2,
+      };
+      if (
+        box.right < -24 ||
+        box.left > size.width + 24 ||
+        box.bottom < 58 ||
+        box.top > size.height + 24
+      )
+        return;
+      if (
+        boxes.some(
+          other =>
+            box.left < other.right &&
+            box.right > other.left &&
+            box.top < other.bottom &&
+            box.bottom > other.top
+        )
+      )
+        return;
+      labels.add(node.id);
+      boxes.push(box);
+    });
+    return labels;
+  }, [camera, nodes, size.height, size.width]);
+  const indiaAdm1Render = useMemo(
+    () =>
+      indiaAdm1Features.flatMap(boundary => {
+        const feature = boundaryToFeature(boundary);
+        const [[minLongitude, minLatitude], [maxLongitude, maxLatitude]] = geoBounds(feature);
+        const point = projection([(minLongitude + maxLongitude) / 2, (minLatitude + maxLatitude) / 2]);
+        const d = pathMaker(feature) ?? "";
+        if (!d || !point || !point.every(Number.isFinite)) return [];
+        return [{ boundary, d, x: point[0], y: point[1] }];
+      }),
+    [indiaAdm1Features, pathMaker, projection]
+  );
+  const indiaAdm2Render = useMemo(
+    () =>
+      indiaAdm2Features.flatMap(boundary => {
+        const feature = boundaryToFeature(boundary);
+        const [[minLongitude, minLatitude], [maxLongitude, maxLatitude]] = geoBounds(feature);
+        const point = projection([(minLongitude + maxLongitude) / 2, (minLatitude + maxLatitude) / 2]);
+        const d = pathMaker(feature) ?? "";
+        if (!d || !point || !point.every(Number.isFinite)) return [];
+        return [{ boundary, d, x: point[0], y: point[1] }];
+      }),
+    [indiaAdm2Features, pathMaker, projection]
+  );
+  const indiaAdm1LabelIds = useMemo(() => {
+    const labels = new Set<string>();
+    if (camera.k < 1.95 || camera.k > 7.8) return labels;
+    const boxes: { left: number; top: number; right: number; bottom: number }[] = [];
+    for (const item of indiaAdm1Render) {
+      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
+      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
+      const width = clamp(item.boundary.name.length * 5.4 + 12, 48, 142);
+      const height = 18;
+      const box = { left: screenX - width / 2, top: screenY - height / 2, right: screenX + width / 2, bottom: screenY + height / 2 };
+      if (box.right < -20 || box.left > size.width + 20 || box.bottom < 58 || box.top > size.height + 20) continue;
+      if (boxes.some(other => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top)) continue;
+      labels.add(item.boundary.id);
+      boxes.push(box);
+    }
+    return labels;
+  }, [camera, indiaAdm1Render, size.height, size.width]);
+  const visibleIndiaAdm2 = useMemo(() => {
+    if (camera.k < 4.9) return [];
+    const candidates = indiaAdm2Render.filter(item => {
+      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
+      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
+      return screenX >= -120 && screenX <= size.width + 120 && screenY >= 54 && screenY <= size.height + 120;
+    });
+    const budget = camera.k < 7.5 ? 260 : camera.k < 11 ? 620 : 1100;
+    return candidates
+      .sort((a, b) => (a.boundary.id === geoSelection?.id ? -1 : 0) - (b.boundary.id === geoSelection?.id ? -1 : 0))
+      .slice(0, budget);
+  }, [camera, geoSelection?.id, indiaAdm2Render, size.height, size.width]);
+  const indiaAdm2LabelIds = useMemo(() => {
+    const labels = new Set<string>();
+    if (camera.k < 6.4) return labels;
+    const boxes: { left: number; top: number; right: number; bottom: number }[] = [];
+    const budget = camera.k < 9.5 ? 54 : 150;
+    for (const item of visibleIndiaAdm2.slice(0, budget * 2)) {
+      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
+      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
+      const width = clamp(item.boundary.name.length * 4.8 + 10, 34, 112);
+      const height = 15;
+      const box = { left: screenX - width / 2, top: screenY - height / 2, right: screenX + width / 2, bottom: screenY + height / 2 };
+      if (box.right < -12 || box.left > size.width + 12 || box.bottom < 58 || box.top > size.height + 12) continue;
+      if (boxes.some(other => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top)) continue;
+      labels.add(item.boundary.id);
+      boxes.push(box);
+      if (labels.size >= budget) break;
+    }
+    return labels;
+  }, [camera, size.height, size.width, visibleIndiaAdm2]);
+  const visibleIndiaLocalities = useMemo(() => {
+    if (camera.k < 8.9) return [];
+    const candidates = indiaLocalityPoints.filter(item => {
+      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
+      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
+      return screenX >= -80 && screenX <= size.width + 80 && screenY >= 54 && screenY <= size.height + 80;
+    });
+    const budget = camera.k < 12 ? 420 : camera.k < 20 ? 900 : 1500;
+    return candidates.sort((a, b) => b.record.population - a.record.population).slice(0, budget);
+  }, [camera, indiaLocalityPoints, size.height, size.width]);
+  const indiaLocalityLabelIds = useMemo(() => {
+    const labels = new Set<string>();
+    if (camera.k < 12) return labels;
+    const boxes: { left: number; top: number; right: number; bottom: number }[] = [];
+    for (const item of visibleIndiaLocalities) {
+      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
+      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
+      const width = clamp(item.record.name.length * 4.6 + 10, 36, 120);
+      const height = 15;
+      const box = { left: screenX + 5, top: screenY - height / 2, right: screenX + 5 + width, bottom: screenY + height / 2 };
+      if (box.right < -12 || box.left > size.width + 12 || box.bottom < 58 || box.top > size.height + 12) continue;
+      if (boxes.some(other => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top)) continue;
+      labels.add(item.record.id);
+      boxes.push(box);
+      if (labels.size >= (camera.k < 18 ? 90 : 180)) break;
+    }
+    return labels;
+  }, [camera, size.height, size.width, visibleIndiaLocalities]);
+  const geoMatches = useMemo<GeoSearchResult[]>(() => {
+    const needle = query.trim().toLowerCase();
+    if (!indiaGeography || needle.length < 2) return [];
+    const stateResults: GeoSearchResult[] = indiaAdm1Render
+      .filter(item => item.boundary.name.toLowerCase().includes(needle))
+      .slice(0, 4)
+      .map(item => ({
+        type: "geo",
+        kind: "adm1",
+        id: item.boundary.id,
+        name: item.boundary.name,
+        parentId: INDIA_ID,
+        point: { x: item.x, y: item.y },
+        source: indiaGeography.layers.adm1.source,
+      }));
+    const districtResults: GeoSearchResult[] = indiaAdm2Render
+      .filter(item => item.boundary.name.toLowerCase().includes(needle))
+      .slice(0, 4)
+      .map(item => ({
+        type: "geo",
+        kind: "adm2",
+        id: item.boundary.id,
+        name: item.boundary.name,
+        parentId: indiaAdm2ParentById.get(item.boundary.id) ?? INDIA_ID,
+        point: { x: item.x, y: item.y },
+        source: indiaGeography.layers.adm2.source,
+      }));
+    const localityResults: GeoSearchResult[] = indiaLocalityPoints
+      .filter(item =>
+        `${item.record.name} ${item.record.asciiName}`.toLowerCase().includes(needle)
+      )
+      .sort((a, b) => b.record.population - a.record.population)
+      .slice(0, 4)
+      .map(item => ({
+        type: "geo",
+        kind: "locality",
+        id: item.record.id,
+        name: item.record.name,
+        parentId: item.record.admin2Code ?? item.record.admin1Code ?? INDIA_ID,
+        point: { x: item.x, y: item.y },
+        source: indiaGeography.layers.localities.source,
+        population: item.record.population,
+        featureCode: item.record.featureCode,
+      }));
+    return [...stateResults, ...districtResults, ...localityResults].slice(0, 8);
+  }, [indiaAdm1Render, indiaAdm2ParentById, indiaAdm2Render, indiaGeography, indiaLocalityPoints, query]);
 
   useEffect(() => {
     if (restoredRef.current) return;
@@ -440,17 +806,83 @@ export default function WorldMapExplorer() {
   };
 
   const focusNode = (node: WorldNode, zoom = 3.8) => {
+    setGeoSelection(null);
     setSelectedId(node.id);
     setQuery("");
     setShowResults(false);
-    setCamera({
+    const next = {
       k: zoom,
       x: size.width / 2 - (node.x - size.width / 2) * zoom,
       y: size.height / 2 - (node.y - size.height / 2) * zoom,
+    };
+    applyCamera(next, true);
+  };
+  const focusGeoPoint = (point: { x: number; y: number }, zoom: number) => {
+    const next = {
+      k: clamp(zoom, MIN_ZOOM, MAX_ZOOM),
+      x: size.width / 2 - (point.x - size.width / 2) * zoom,
+      y: size.height / 2 - (point.y - size.height / 2) * zoom,
+    };
+    applyCamera(next, true);
+  };
+  const selectGeoEntity = (
+    kind: Exclude<GeoEntityKind, "country">,
+    id: string,
+    name: string,
+    point: { x: number; y: number },
+    source: GeographySource,
+    parentId: string | null,
+    details: { population?: number; featureCode?: string } = {}
+  ) => {
+    setSelectedId(INDIA_ID);
+    setGeoSelection({
+      kind,
+      id,
+      name,
+      parentId,
+      source,
+      description:
+        kind === "adm1"
+          ? "Administrative reference geometry for an Indian state or union territory."
+          : kind === "adm2"
+            ? "Administrative reference geometry for an Indian district."
+            : "GeoNames place reference; this point does not assert organization location or activity.",
+      point,
+      ...details,
     });
+    setQuery("");
+    setShowResults(false);
+    focusGeoPoint(point, kind === "adm1" ? 4.1 : kind === "adm2" ? 7.2 : 12.5);
+  };
+  const focusGeoResult = (result: GeoSearchResult) => {
+    selectGeoEntity(
+      result.kind,
+      result.id,
+      result.name,
+      result.point,
+      result.source,
+      result.parentId,
+      { population: result.population, featureCode: result.featureCode }
+    );
+  };
+  const goToGeoParent = () => {
+    if (!geoSelection || !indiaGeography) return;
+    if (geoSelection.kind === "adm1" || geoSelection.parentId === INDIA_ID) {
+      setGeoSelection(null);
+      if (indiaNode) focusNode(indiaNode, 3.8);
+      return;
+    }
+    const parent = indiaAdm1Render.find(item => item.boundary.id === geoSelection.parentId);
+    if (parent) {
+      selectGeoEntity("adm1", parent.boundary.id, parent.boundary.name, { x: parent.x, y: parent.y }, indiaGeography.layers.adm1.source, INDIA_ID);
+      return;
+    }
+    setGeoSelection(null);
   };
   const reset = () => {
-    setCamera({ x: size.width / 2, y: size.height / 2, k: 1 });
+    setGeoSelection(null);
+    const next = { x: size.width / 2, y: size.height / 2, k: 1 };
+    applyCamera(next, true);
     setSelectedId(null);
     setNearbyMode(false);
     setQuery("");
@@ -462,8 +894,8 @@ export default function WorldMapExplorer() {
     focusNode(selected, 2.25);
   };
   const viewAll = () => {
+    setGeoSelection(null);
     setNearbyMode(false);
-    setSelectedId(null);
     reset();
   };
   const copyName = async () => {
@@ -607,6 +1039,28 @@ export default function WorldMapExplorer() {
       commitCamera();
     }, 140);
   };
+  const indiaContextActive = selectedId === INDIA_ID || Boolean(geoSelection);
+  const showIndiaHierarchy = Boolean(
+    indiaGeography && (indiaInView || indiaContextActive) && camera.k >= 1.85
+  );
+  const showCountryFieldMarkers = !(showIndiaHierarchy && camera.k >= 2.15);
+  const showIndiaAdm1 = showIndiaHierarchy && camera.k >= 1.85;
+  const showIndiaAdm2 = showIndiaHierarchy && camera.k >= 4.8;
+  const showIndiaLocalities = showIndiaHierarchy && camera.k >= 8.9;
+  const geoParentLabel = geoSelection?.parentId
+    ? indiaAdm1Features.find(item => item.id === geoSelection.parentId)?.name ??
+      indiaAdm2Features.find(item => item.id === geoSelection.parentId)?.name ??
+      null
+    : null;
+  const currentGeoLevel = geoSelection
+    ? geoKindLabel(geoSelection.kind)
+    : camera.k >= INDIA_LOCALITY_ZOOM
+      ? "City / locality"
+      : camera.k >= INDIA_ADM2_ZOOM
+        ? "District"
+        : camera.k >= INDIA_ADM1_ZOOM
+          ? "State / union territory"
+          : "Country overview";
   if (error)
     return (
       <div className="grid min-h-[calc(100vh-68px)] place-items-center bg-[#08111d] p-6 text-center text-white">
@@ -726,7 +1180,144 @@ export default function WorldMapExplorer() {
               </path>
             );
           })}
-          {visibleNodes.map((node, index) => {
+          {countryLabelIds.size > 0 &&
+            nodes.map(node => {
+              if (!countryLabelIds.has(node.id)) return null;
+              const labelSize = clamp(16 + Math.log2(Math.max(1, camera.k)) * 5, 16, 34) / camera.k;
+              return (
+                <text
+                  key={`country-label-${node.id}`}
+                  x={node.x}
+                  y={node.y}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fontSize={labelSize}
+                  fontWeight={700}
+                  fill="#c5e8e1"
+                  opacity={clamp(1.1 - Math.max(0, camera.k - 1) * 0.42, 0.12, 1)}
+                  pointerEvents="none"
+                  style={{ paintOrder: "stroke", stroke: "#08111d", strokeWidth: 3 / camera.k }}
+                >
+                  {shortText(node.name, 20)}
+                </text>
+              );
+            })}
+          {showIndiaAdm1 &&
+            indiaAdm1Render.map(item => {
+              const selectedGeo = geoSelection?.kind === "adm1" && geoSelection.id === item.boundary.id;
+              const opacity = camera.k < 2.25 ? (camera.k - 1.85) / 0.4 : camera.k < 6.8 ? 0.96 : Math.max(0.18, 1 - (camera.k - 6.8) / 1.4);
+              return (
+                <g key={`adm1-${item.boundary.id}`}>
+                  <path
+                    d={item.d}
+                    fill={selectedGeo ? "#ffbf69" : "#ba7a48"}
+                    fillOpacity={selectedGeo ? 0.22 : 0.035}
+                    stroke={selectedGeo ? "#fff1c7" : "#d79d61"}
+                    strokeOpacity={opacity}
+                    strokeWidth={(selectedGeo ? 1.8 : 0.9) / camera.k}
+                    onClick={event => {
+                      event.stopPropagation();
+                      if (!movedRef.current && performance.now() >= suppressClickUntilRef.current && indiaGeography)
+                        selectGeoEntity("adm1", item.boundary.id, item.boundary.name, { x: item.x, y: item.y }, indiaGeography.layers.adm1.source, INDIA_ID);
+                    }}
+                  />
+                  {indiaAdm1LabelIds.has(item.boundary.id) && (
+                    <text
+                      x={item.x}
+                      y={item.y}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontSize={clamp(11 + Math.log2(Math.max(1, camera.k)) * 1.5, 11, 17) / camera.k}
+                      fontWeight={700}
+                      fill="#f2c18a"
+                      opacity={opacity}
+                      pointerEvents="none"
+                      style={{ paintOrder: "stroke", stroke: "#08111d", strokeWidth: 2.6 / camera.k }}
+                    >
+                      {shortText(item.boundary.name, 22)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          {showIndiaAdm2 &&
+            visibleIndiaAdm2.map(item => {
+              const selectedGeo = geoSelection?.kind === "adm2" && geoSelection.id === item.boundary.id;
+              const opacity = camera.k < 5.8 ? (camera.k - 4.8) / 1 : camera.k < 12 ? 0.82 : Math.max(0.16, 1 - (camera.k - 12) / 8);
+              return (
+                <g key={`adm2-${item.boundary.id}`}>
+                  <path
+                    d={item.d}
+                    fill={selectedGeo ? "#ffbf69" : "#d4ae54"}
+                    fillOpacity={selectedGeo ? 0.18 : 0.018}
+                    stroke={selectedGeo ? "#fff1c7" : "#d4ae54"}
+                    strokeOpacity={opacity}
+                    strokeWidth={(selectedGeo ? 1.6 : 0.55) / camera.k}
+                    onClick={event => {
+                      event.stopPropagation();
+                      if (!movedRef.current && performance.now() >= suppressClickUntilRef.current && indiaGeography)
+                        selectGeoEntity("adm2", item.boundary.id, item.boundary.name, { x: item.x, y: item.y }, indiaGeography.layers.adm2.source, indiaAdm2ParentById.get(item.boundary.id) ?? INDIA_ID);
+                    }}
+                  />
+                  {indiaAdm2LabelIds.has(item.boundary.id) && (
+                    <text
+                      x={item.x}
+                      y={item.y}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontSize={clamp(10 + Math.log2(Math.max(1, camera.k)) * 1.2, 10, 15) / camera.k}
+                      fontWeight={650}
+                      fill="#f2d88e"
+                      opacity={opacity}
+                      pointerEvents="none"
+                      style={{ paintOrder: "stroke", stroke: "#08111d", strokeWidth: 2.2 / camera.k }}
+                    >
+                      {shortText(item.boundary.name, 18)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          {showIndiaLocalities &&
+            visibleIndiaLocalities.map(item => {
+              const selectedGeo = geoSelection?.kind === "locality" && geoSelection.id === item.record.id;
+              const radius = clamp(2 + Math.log10(item.record.population + 1) * 0.42, 2.2, 6.2) / camera.k;
+              return (
+                <g key={`locality-${item.record.id}`}>
+                  <circle
+                    cx={item.x}
+                    cy={item.y}
+                    r={selectedGeo ? radius + 2 / camera.k : radius}
+                    fill={selectedGeo ? "#ffbf69" : "#45d7c0"}
+                    fillOpacity={selectedGeo ? 0.95 : 0.82}
+                    stroke={selectedGeo ? "#fff1c7" : "#092033"}
+                    strokeWidth={0.7 / camera.k}
+                    onClick={event => {
+                      event.stopPropagation();
+                      if (!movedRef.current && performance.now() >= suppressClickUntilRef.current && indiaGeography) {
+                        const [longitude, latitude] = [item.record.longitude, item.record.latitude];
+                        const parentDistrict = indiaAdm2Features.find(boundary => geoContains(boundaryToFeature(boundary), [longitude, latitude]));
+                        selectGeoEntity("locality", item.record.id, item.record.name, { x: item.x, y: item.y }, indiaGeography.layers.localities.source, parentDistrict?.id ?? item.record.admin2Code ?? item.record.admin1Code ?? INDIA_ID, { population: item.record.population, featureCode: item.record.featureCode });
+                      }
+                    }}
+                  />
+                  {indiaLocalityLabelIds.has(item.record.id) && (
+                    <text
+                      x={item.x + 6 / camera.k}
+                      y={item.y + 3 / camera.k}
+                      fontSize={clamp(10 + Math.log2(Math.max(1, camera.k)) * 1.1, 10, 15) / camera.k}
+                      fontWeight={650}
+                      fill="#b8eee6"
+                      pointerEvents="none"
+                      style={{ paintOrder: "stroke", stroke: "#08111d", strokeWidth: 2 / camera.k }}
+                    >
+                      {shortText(item.record.name, 20)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          {showCountryFieldMarkers && visibleNodes.map((node, index) => {
             const visible = !nearbyMode || nearbyIds.has(node.id);
             if (!visible) return null;
             const isSelected = selectedId === node.id;
@@ -832,13 +1423,21 @@ export default function WorldMapExplorer() {
           </span>
           <span className="text-[#526b84]">/</span>
           <span className="font-mono text-[9px] uppercase tracking-[.16em] text-[#9db2c8]">
-            {nearbyMode ? "nearby fields" : "all country fields"}
+            {nearbyMode ? "nearby fields" : currentGeoLevel.toLowerCase()}
           </span>
-          {selected && (
+          {selected && !geoSelection && (
             <>
               <span className="text-[#526b84]">/</span>
               <span className="max-w-[190px] truncate font-mono text-[9px] uppercase tracking-[.14em] text-[#ffbf69]">
                 {selected.name}
+              </span>
+            </>
+          )}
+          {geoSelection && (
+            <>
+              <span className="text-[#526b84]">/</span>
+              <span className="max-w-[210px] truncate font-mono text-[9px] uppercase tracking-[.14em] text-[#ffbf69]">
+                India / {geoSelection.name}
               </span>
             </>
           )}
@@ -870,9 +1469,9 @@ export default function WorldMapExplorer() {
           </span>
         </div>
         <p className="mt-3 text-sm leading-6 text-[#b4c4d5]">
-          Drag to roam. Zoom at the cursor. Each glowing field is a
-          country-level GLEIF record aggregate; proximity is a visual cue, not a
-          causal claim.
+          Drag to roam. Zoom at the cursor. Country labels give way to India’s
+          sourced states, districts, and GeoNames place references as scale increases.
+          The global map stays country-level where subnational coverage is unavailable.
         </p>
         <div className="mt-4 space-y-2 border-t border-[#203b54] pt-3 font-mono text-[9px] uppercase tracking-[.1em] text-[#8297ac]">
           <p>
@@ -884,9 +1483,14 @@ export default function WorldMapExplorer() {
             inspect the source record
           </p>
           <p>
-            <span className="mr-2 text-[#9babc0]">03</span>Show nearby focuses a
-            local visual subgraph
+            <span className="mr-2 text-[#9babc0]">03</span>India drill-down: state → district → city
           </p>
+          <p>
+            <span className="mr-2 text-[#9babc0]">04</span>Every geographic point opens its source boundary
+          </p>
+          {indiaGeoError && (
+            <p className="text-[#efb0a2]">India detail source unavailable in this session.</p>
+          )}
         </div>
       </aside>
 
@@ -936,41 +1540,60 @@ export default function WorldMapExplorer() {
               setShowResults(true);
             }}
             onKeyDown={event => {
-              if (event.key === "Enter" && matches[0]) focusNode(matches[0]);
+              if (event.key !== "Enter") return;
+              if (geoMatches[0]) focusGeoResult(geoMatches[0]);
+              else if (matches[0]) focusNode(matches[0]);
             }}
-            placeholder="Find a country field…"
+            placeholder="Find a country, state, district, or city…"
             className="w-full rounded-xl border border-[#35536f] bg-[#0b1a2a]/96 py-3 pl-11 pr-4 text-sm text-[#e8f2f5] shadow-2xl shadow-black/25 outline-none transition placeholder:text-[#738aa0] focus:border-[#45d7c0] focus:ring-4 focus:ring-[#45d7c0]/10"
           />
           {showResults && query && (
             <div className="absolute bottom-[calc(100%+8px)] left-0 right-0 max-h-72 overflow-auto rounded-xl border border-[#35536f] bg-[#0b1a2a] p-2 shadow-2xl">
               <div className="px-3 py-2 font-mono text-[9px] uppercase tracking-[.16em] text-[#7189a0]">
-                Country fields
+                {geoMatches.length ? "Sourced geographic entities" : "Country fields"}
               </div>
-              {matches.length ? (
-                matches.map(node => (
-                  <button
-                    key={node.id}
-                    type="button"
-                    onClick={() => focusNode(node)}
-                    className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-[#122b40]"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-[#e6f3f2]">
-                        {node.name}
-                      </span>
-                      <span className="mt-0.5 block font-mono text-[9px] uppercase tracking-[.12em] text-[#7991a6]">
-                        {node.code} ·{" "}
-                        {node.total != null
-                          ? `${formatNumber(node.total)} records`
-                          : "unavailable"}
-                      </span>
+              {geoMatches.map(result => (
+                <button
+                  key={`${result.kind}-${result.id}`}
+                  type="button"
+                  onClick={() => focusGeoResult(result)}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-[#122b40]"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-[#e6f3f2]">
+                      {result.name}
                     </span>
-                    <ChevronLeft className="h-4 w-4 rotate-180 text-[#45d7c0]" />
-                  </button>
-                ))
-              ) : (
+                    <span className="mt-0.5 block font-mono text-[9px] uppercase tracking-[.12em] text-[#7991a6]">
+                      {geoKindLabel(result.kind)} · {result.population != null ? `${formatNumber(result.population)} population reference` : "India source layer"}
+                    </span>
+                  </span>
+                  <ChevronLeft className="h-4 w-4 rotate-180 text-[#45d7c0]" />
+                </button>
+              ))}
+              {matches.map(node => (
+                <button
+                  key={`country-${node.id}`}
+                  type="button"
+                  onClick={() => focusNode(node)}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-[#122b40]"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-[#e6f3f2]">
+                      {node.name}
+                    </span>
+                    <span className="mt-0.5 block font-mono text-[9px] uppercase tracking-[.12em] text-[#7991a6]">
+                      {node.code} ·{" "}
+                      {node.total != null
+                        ? `${formatNumber(node.total)} records`
+                        : "unavailable"}
+                    </span>
+                  </span>
+                  <ChevronLeft className="h-4 w-4 rotate-180 text-[#45d7c0]" />
+                </button>
+              ))}
+              {!geoMatches.length && !matches.length && (
                 <p className="px-3 py-4 text-sm text-[#9ab0c3]">
-                  No country field matches that search.
+                  No sourced country or India geographic entity matches that search.
                 </p>
               )}
             </div>
@@ -984,7 +1607,8 @@ export default function WorldMapExplorer() {
             Wheel at cursor
           </span>
           <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
-            {nodes.length} fields
+            {nodes.length} country fields
+            {indiaGeography ? ` · ${indiaGeography.layers.adm1.features.length} states · ${indiaGeography.layers.adm2.features.length} districts` : ""}
           </span>
         </div>
       </div>
@@ -1021,7 +1645,90 @@ export default function WorldMapExplorer() {
         </button>
       </div>
 
-      {selected && (
+      {geoSelection && (
+        <aside
+          data-world-overlay
+          className="absolute bottom-0 left-0 right-0 top-0 z-40 flex w-full flex-col overflow-hidden rounded-none sm:bottom-4 sm:left-auto sm:right-4 sm:top-4 sm:w-[min(410px,calc(100vw-2rem))] sm:rounded-2xl border border-[#35536f] bg-[#0b1a2a]/97 shadow-2xl shadow-black/40 backdrop-blur-xl sm:right-16"
+          onPointerDown={event => event.stopPropagation()}
+          onWheel={event => event.stopPropagation()}
+        >
+          <div className="flex items-center justify-between border-b border-[#203b54] px-4 py-3 pb-[max(.75rem,env(safe-area-inset-top))] sm:px-5 sm:py-4">
+            <span className="font-mono text-[9px] uppercase tracking-[.18em] text-[#8fa7bc]">
+              Geographic entity inspector
+            </span>
+            <button
+              type="button"
+              onClick={() => setGeoSelection(null)}
+              className="rounded-md p-1.5 text-[#8da4b8] hover:bg-[#122b40] hover:text-white"
+              aria-label="Close geographic inspector"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[.16em] text-[#ffbf69]">
+                <span className="h-2 w-2 rounded-full bg-[#ffbf69]" />
+                {geoKindLabel(geoSelection.kind)}
+              </div>
+              <span className="rounded-full bg-[#122b40] px-2 py-1 font-mono text-[8px] uppercase tracking-[.13em] text-[#a1b6c8]">
+                India source layer
+              </span>
+            </div>
+            <h2 className="mt-4 font-display text-4xl leading-[.94] text-white">
+              {geoSelection.name}
+            </h2>
+            <p className="mt-4 text-sm leading-6 text-[#b4c4d5]">
+              {geoSelection.description}
+            </p>
+            <div className="mt-6 grid grid-cols-2 gap-3 border-y border-[#203b54] py-5">
+              <div>
+                <div className="font-mono text-[9px] uppercase tracking-[.12em] text-[#8097ad]">Current level</div>
+                <div className="mt-1 text-sm font-semibold text-[#e6f3f2]">{geoKindLabel(geoSelection.kind)}</div>
+              </div>
+              <div>
+                <div className="font-mono text-[9px] uppercase tracking-[.12em] text-[#8097ad]">Parent</div>
+                <div className="mt-1 text-sm text-[#b4c4d5]">{geoParentLabel ?? (geoSelection.parentId === INDIA_ID ? "India" : "Source code")}</div>
+              </div>
+            </div>
+            {geoSelection.population != null && (
+              <div className="mt-5 rounded-xl border border-[#294761] bg-[#0d2234] p-4">
+                <div className="font-mono text-[9px] uppercase tracking-[.12em] text-[#8097ad]">GeoNames population reference</div>
+                <div className="mt-1 font-display text-3xl text-[#e6f3f2]">{formatNumber(geoSelection.population)}</div>
+                {geoSelection.featureCode && <div className="mt-1 font-mono text-[9px] uppercase tracking-[.12em] text-[#7890a7]">Feature code · {geoSelection.featureCode}</div>}
+              </div>
+            )}
+            <p className="mt-5 border-l-2 border-[#ffbf69] pl-3 text-sm leading-6 text-[#efcf9f]">
+              This layer describes a geographic reference, not a count of businesses, startups, jobs, or entity activity.
+            </p>
+            <div className="mt-6 grid gap-2">
+              <button
+                type="button"
+                onClick={goToGeoParent}
+                className="flex items-center gap-2 rounded-xl border border-[#685031] bg-[#221c14] px-4 py-3 text-left text-sm font-semibold text-[#f3d49f] hover:border-[#ffbf69]"
+              >
+                <ChevronLeft className="h-4 w-4" /> Back to parent level
+              </button>
+              <button
+                type="button"
+                onClick={() => setGeoSelection(null)}
+                className="flex items-center gap-2 rounded-xl px-4 py-3 text-left text-xs text-[#9cb1c3] hover:bg-[#122b40] hover:text-white"
+              >
+                <X className="h-4 w-4" /> Close inspector
+              </button>
+            </div>
+            <a
+              href={geoSelection.source.sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-7 flex items-center gap-2 border-t border-[#203b54] pt-5 font-mono text-[9px] uppercase tracking-[.12em] text-[#45d7c0] hover:text-[#b7fff0]"
+            >
+              Open {geoSelection.source.publisher} source <ExternalLink className="ml-auto h-3.5 w-3.5" />
+            </a>
+          </div>
+        </aside>
+      )}
+      {selected && !geoSelection && (
         <aside
           data-world-overlay
           className="absolute bottom-0 left-0 right-0 top-0 z-40 flex w-full flex-col overflow-hidden rounded-none sm:bottom-4 sm:left-auto sm:right-4 sm:top-4 sm:w-[min(410px,calc(100vw-2rem))] sm:rounded-2xl border border-[#35536f] bg-[#0b1a2a]/97 shadow-2xl shadow-black/40 backdrop-blur-xl sm:right-16"
@@ -1034,7 +1741,10 @@ export default function WorldMapExplorer() {
             </span>
             <button
               type="button"
-              onClick={() => setSelectedId(null)}
+              onClick={() => {
+                setSelectedId(null);
+                setGeoSelection(null);
+              }}
               className="rounded-md p-1.5 text-[#8da4b8] hover:bg-[#122b40] hover:text-white"
               aria-label="Close country inspector"
             >

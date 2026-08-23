@@ -768,6 +768,11 @@ function withAssetCacheHeaders(response: Response, pathname: string) {
     headers.set("cache-control", "public, max-age=60, must-revalidate");
   } else if (new RegExp("^/data/india-tiles/[^/]+/").test(pathname)) {
     headers.set("cache-control", "public, max-age=31536000, immutable");
+  } else if (pathname === "/data/world-venture.json") {
+    headers.set(
+      "cache-control",
+      "public, max-age=3600, stale-while-revalidate=86400"
+    );
   }
   return new Response(response.body, {
     status: response.status,

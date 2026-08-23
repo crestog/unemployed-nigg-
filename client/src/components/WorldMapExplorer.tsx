@@ -335,6 +335,9 @@ export default function WorldMapExplorer() {
   const indiaTileWorkerRef = useRef<Worker | null>(null);
   const indiaTileWorkerRequestRef = useRef(0);
   const indiaTileWorkerPendingRef = useRef(new Map<number, string>());
+  const indiaTileRetryAttemptsRef = useRef(new Map<string, number>());
+  const indiaTileRetryTimersRef = useRef(new Map<string, number>());
+  const indiaTileFailedRef = useRef(new Set<string>());
   const [release, setRelease] = useState<WorldRelease | null>(null);
   const [indiaTileManifest, setIndiaTileManifest] =
     useState<IndiaTileManifest | null>(null);
@@ -348,6 +351,9 @@ export default function WorldMapExplorer() {
     IndiaLocality[]
   >([]);
   const [indiaGeoError, setIndiaGeoError] = useState<string | null>(null);
+  const [indiaManifestLoading, setIndiaManifestLoading] = useState(false);
+  const [indiaTilePendingCount, setIndiaTilePendingCount] = useState(0);
+  const [indiaTileRetryNonce, setIndiaTileRetryNonce] = useState(0);
   const [geoSelection, setGeoSelection] = useState<GeoSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const previousSizeRef = useRef({ width: 1280, height: 760 });
@@ -380,12 +386,31 @@ export default function WorldMapExplorer() {
       }>
     ) => {
       const { id, cacheKey, ok, tile, error: workerError } = event.data;
-      indiaTileWorkerPendingRef.current.delete(id);
+      if (!indiaTileWorkerPendingRef.current.delete(id)) return;
+      setIndiaTilePendingCount(current => Math.max(0, current - 1));
       if (!ok || !tile) {
         indiaTileCacheRef.current.delete(cacheKey);
+        indiaTileFailedRef.current.add(cacheKey);
         setIndiaGeoError(workerError ?? "India tile parsing failed");
+        const attempts =
+          (indiaTileRetryAttemptsRef.current.get(cacheKey) ?? 0) + 1;
+        indiaTileRetryAttemptsRef.current.set(cacheKey, attempts);
+        if (attempts <= 3 && !indiaTileRetryTimersRef.current.has(cacheKey)) {
+          const timer = window.setTimeout(
+            () => {
+              indiaTileRetryTimersRef.current.delete(cacheKey);
+              indiaTileFailedRef.current.delete(cacheKey);
+              setIndiaTileRetryNonce(current => current + 1);
+            },
+            Math.min(8000, 700 * 2 ** (attempts - 1))
+          );
+          indiaTileRetryTimersRef.current.set(cacheKey, timer);
+        }
         return;
       }
+      indiaTileFailedRef.current.delete(cacheKey);
+      indiaTileRetryAttemptsRef.current.delete(cacheKey);
+      if (!indiaTileFailedRef.current.size) setIndiaGeoError(null);
       if (tile.layer === "adm1")
         setIndiaAdm1Features(current =>
           mergeUniqueById(current, tile.records as IndiaBoundary[])
@@ -399,10 +424,22 @@ export default function WorldMapExplorer() {
           mergeUniqueById(current, tile.records as IndiaLocality[])
         );
     };
+    worker.onerror = () => {
+      indiaTileWorkerPendingRef.current.forEach(cacheKey =>
+        indiaTileCacheRef.current.delete(cacheKey)
+      );
+      indiaTileWorkerPendingRef.current.clear();
+      setIndiaTilePendingCount(0);
+      setIndiaGeoError("India detail worker failed");
+    };
     return () => {
       worker.terminate();
       indiaTileWorkerRef.current = null;
       indiaTileWorkerPendingRef.current.clear();
+      indiaTileRetryTimersRef.current.forEach(timer =>
+        window.clearTimeout(timer)
+      );
+      indiaTileRetryTimersRef.current.clear();
     };
   }, []);
 
@@ -604,17 +641,25 @@ export default function WorldMapExplorer() {
       }),
     [indiaLocalityRecords, projection]
   );
+  const indiaSceneBounds = useMemo(() => {
+    if (!indiaNode) return null;
+    return pathMaker.bounds(indiaNode.feature as GeoJSON.Feature);
+  }, [indiaNode, pathMaker]);
   const indiaInView = useMemo(() => {
-    if (!indiaNode) return false;
-    const screenX = camera.x + (indiaNode.x - size.width / 2) * camera.k;
-    const screenY = camera.y + (indiaNode.y - size.height / 2) * camera.k;
+    if (!indiaSceneBounds) return false;
+    const [[minX, minY], [maxX, maxY]] = indiaSceneBounds;
+    const left = camera.x + (minX - size.width / 2) * camera.k;
+    const right = camera.x + (maxX - size.width / 2) * camera.k;
+    const top = camera.y + (minY - size.height / 2) * camera.k;
+    const bottom = camera.y + (maxY - size.height / 2) * camera.k;
+    const margin = Math.max(size.width, size.height) * 0.55;
     return (
-      screenX >= -size.width * 0.45 &&
-      screenX <= size.width * 1.45 &&
-      screenY >= 54 - size.height * 0.45 &&
-      screenY <= size.height * 1.45
+      right >= -margin &&
+      left <= size.width + margin &&
+      bottom >= 54 - margin &&
+      top <= size.height + margin
     );
-  }, [camera, indiaNode, size.height, size.width]);
+  }, [camera, indiaSceneBounds, size.height, size.width]);
   const viewportGeoBounds = useMemo(() => {
     const inverse = projection.invert;
     if (!inverse) return null;
@@ -646,25 +691,21 @@ export default function WorldMapExplorer() {
     ] as [[number, number], [number, number]];
   }, [camera, projection, size.height, size.width]);
   useEffect(() => {
-    if (!indiaNode) return;
-    const screenX = camera.x + (indiaNode.x - size.width / 2) * camera.k;
-    const screenY = camera.y + (indiaNode.y - size.height / 2) * camera.k;
-    const nearViewport =
-      camera.k >= 1.45 &&
-      screenX >= -size.width * 0.35 &&
-      screenX <= size.width * 1.35 &&
-      screenY >= -size.height * 0.35 &&
-      screenY <= size.height * 1.35;
-    if (!nearViewport) return;
+    if (!indiaNode || camera.k < 1.45 || !indiaInView) return;
     if (!indiaTileManifest && !indiaManifestRequestedRef.current) {
       indiaManifestRequestedRef.current = true;
+      setIndiaManifestLoading(true);
       fetch("/data/india-tiles/manifest.json")
         .then(response => {
           if (!response.ok) throw new Error("India tile manifest unavailable");
           return response.json() as Promise<IndiaTileManifest>;
         })
         .then(setIndiaTileManifest)
-        .catch((cause: Error) => setIndiaGeoError(cause.message));
+        .catch((cause: Error) => {
+          indiaManifestRequestedRef.current = false;
+          setIndiaGeoError(cause.message);
+        })
+        .finally(() => setIndiaManifestLoading(false));
       return;
     }
     if (!indiaTileManifest || !viewportGeoBounds) return;
@@ -684,14 +725,30 @@ export default function WorldMapExplorer() {
         indiaTileManifest.layers.localities,
         viewportGeoBounds
       ).forEach(key => requests.push(["localities", key]));
+    const neededCacheKeys = new Set(
+      requests.map(([layer, key]) => `${layer}:${key}`)
+    );
+    indiaTileWorkerPendingRef.current.forEach((cacheKey, requestId) => {
+      if (neededCacheKeys.has(cacheKey)) return;
+      indiaTileWorkerRef.current?.postMessage({
+        type: "cancel",
+        id: requestId,
+        cacheKey,
+      });
+      indiaTileWorkerPendingRef.current.delete(requestId);
+      indiaTileCacheRef.current.delete(cacheKey);
+      setIndiaTilePendingCount(current => Math.max(0, current - 1));
+    });
     requests.forEach(([layer, key]) => {
       const cacheKey = `${layer}:${key}`;
       if (indiaTileCacheRef.current.has(cacheKey)) return;
       indiaTileCacheRef.current.add(cacheKey);
+      setIndiaTilePendingCount(current => current + 1);
       const { x, y } = tileKeyParts(key);
       const worker = indiaTileWorkerRef.current;
       if (!worker) {
         indiaTileCacheRef.current.delete(cacheKey);
+        setIndiaTilePendingCount(current => Math.max(0, current - 1));
         setIndiaGeoError("India tile worker unavailable");
         return;
       }
@@ -706,17 +763,15 @@ export default function WorldMapExplorer() {
     });
   }, [
     camera,
+    indiaInView,
     indiaNode,
     indiaTileManifest,
+    indiaTileRetryNonce,
     projection,
     size.height,
     size.width,
     viewportGeoBounds,
   ]);
-  const maxTotal = useMemo(
-    () => Math.max(1, ...nodes.map(node => node.total ?? 0)),
-    [nodes]
-  );
   const selected = selectedId ? (nodeById.get(selectedId) ?? null) : null;
   const hoveredNode = hovered ? (nodeById.get(hovered.id) ?? null) : null;
   const matches = useMemo(() => {
@@ -741,83 +796,11 @@ export default function WorldMapExplorer() {
         .map(item => item.id)
     );
   }, [nodes, selected]);
-  const nodeBudget =
-    camera.k < 1.2
-      ? 140
-      : camera.k < 2.8
-        ? 220
-        : Math.min(nodes.length, camera.k < 6 ? 600 : 1200);
-  const visibleNodes = useMemo(() => {
-    if (nearbyMode) return nodes.filter(node => nearbyIds.has(node.id));
-    const viewportNodes = nodes.filter(node => {
-      if (node.id === selectedId) return true;
-      const screenX = camera.x + (node.x - size.width / 2) * camera.k;
-      const screenY = camera.y + (node.y - size.height / 2) * camera.k;
-      return (
-        screenX >= -100 &&
-        screenX <= size.width + 100 &&
-        screenY >= -100 &&
-        screenY <= size.height + 100
-      );
-    });
-    return [...viewportNodes]
-      .sort((a, b) => {
-        if (a.id === selectedId) return -1;
-        if (b.id === selectedId) return 1;
-        return (b.total ?? -1) - (a.total ?? -1);
-      })
-      .slice(0, nodeBudget);
-  }, [
-    camera.k,
-    camera.x,
-    camera.y,
-    nearbyIds,
-    nearbyMode,
-    nodeBudget,
-    nodes,
-    selectedId,
-    size.height,
-    size.width,
-  ]);
-  const labelIds = useMemo(() => {
-    const labelBudget =
-      camera.k < 1.6 ? 0 : camera.k < 2.8 ? 44 : camera.k < 6 ? 96 : 160;
-    const labels = new Set<string>();
-    const boxes: {
-      left: number;
-      top: number;
-      right: number;
-      bottom: number;
-    }[] = [];
-    visibleNodes.forEach((node, index) => {
-      const isSelected = selectedId === node.id;
-      if (!isSelected && (camera.k < 1.6 || index >= labelBudget)) return;
-      const screenX = camera.x + (node.x - size.width / 2) * camera.k;
-      const screenY = camera.y + (node.y - size.height / 2) * camera.k;
-      const width = clamp(node.name.length * 5.9 + 18, 42, 154);
-      const height = 18;
-      const box = {
-        left: screenX + 8,
-        top: screenY - height / 2,
-        right: screenX + 8 + width,
-        bottom: screenY + height / 2,
-      };
-      const overlaps = boxes.some(
-        other =>
-          box.left < other.right &&
-          box.right > other.left &&
-          box.top < other.bottom &&
-          box.bottom > other.top
-      );
-      if (overlaps && !isSelected) return;
-      labels.add(node.id);
-      boxes.push(box);
-    });
-    return labels;
-  }, [camera, selectedId, size.height, size.width, visibleNodes]);
   const countryLabelIds = useMemo(() => {
     const labels = new Set<string>();
-    if (camera.k > 2.45) return labels;
+    const indiaDetailPending =
+      indiaInView && camera.k >= 1.45 && indiaAdm1Features.length === 0;
+    if (camera.k > 2.45 && !indiaDetailPending) return labels;
     const boxes: {
       left: number;
       top: number;
@@ -825,7 +808,11 @@ export default function WorldMapExplorer() {
       bottom: number;
     }[] = [];
     const candidates = [...nodes]
-      .sort((a, b) => (b.total ?? -1) - (a.total ?? -1))
+      .sort((a, b) => {
+        if (a.id === selectedId) return -1;
+        if (b.id === selectedId) return 1;
+        return (b.total ?? -1) - (a.total ?? -1);
+      })
       .slice(0, camera.k < 1.35 ? 52 : 36);
     candidates.forEach(node => {
       const screenX = camera.x + (node.x - size.width / 2) * camera.k;
@@ -859,7 +846,15 @@ export default function WorldMapExplorer() {
       boxes.push(box);
     });
     return labels;
-  }, [camera, nodes, size.height, size.width]);
+  }, [
+    camera,
+    indiaAdm1Features.length,
+    indiaInView,
+    nodes,
+    selectedId,
+    size.height,
+    size.width,
+  ]);
   const indiaAdm1Render = useMemo(
     () =>
       indiaAdm1Features.flatMap(boundary => {
@@ -1274,6 +1269,13 @@ export default function WorldMapExplorer() {
     setNearbyMode(false);
     reset();
   };
+  const retryIndiaDetails = () => {
+    indiaManifestRequestedRef.current = false;
+    indiaTileRetryAttemptsRef.current.clear();
+    indiaTileFailedRef.current.clear();
+    setIndiaGeoError(null);
+    setIndiaTileRetryNonce(current => current + 1);
+  };
   const copyName = async () => {
     if (!selected) return;
     try {
@@ -1449,8 +1451,19 @@ export default function WorldMapExplorer() {
       dragRef.current = null;
       setDrag(null);
     }
+    if (pointersRef.current.size === 1 && movedRef.current) {
+      const [remainingPointer, remainingPoint] = Array.from(
+        pointersRef.current.entries()
+      )[0];
+      dragRef.current = {
+        pointer: remainingPointer,
+        x: remainingPoint.x,
+        y: remainingPoint.y,
+      };
+      setDrag(dragRef.current);
+    }
     if (movedRef.current) {
-      commitCamera();
+      if (pointersRef.current.size === 0) commitCamera();
       return;
     }
     if (!pointer || pointersRef.current.size > 0) return;
@@ -1477,8 +1490,21 @@ export default function WorldMapExplorer() {
   const onPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
     pointersRef.current.delete(event.pointerId);
     pinchRef.current = null;
-    dragRef.current = null;
-    setDrag(null);
+    if (pointersRef.current.size === 0) {
+      dragRef.current = null;
+      setDrag(null);
+      if (movedRef.current) commitCamera();
+      return;
+    }
+    const [remainingPointer, remainingPoint] = Array.from(
+      pointersRef.current.entries()
+    )[0];
+    dragRef.current = {
+      pointer: remainingPointer,
+      x: remainingPoint.x,
+      y: remainingPoint.y,
+    };
+    setDrag(dragRef.current);
   };
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     if (overlayTarget(event.target)) return;
@@ -1497,11 +1523,24 @@ export default function WorldMapExplorer() {
       commitCamera();
     }, 140);
   };
+  const indiaDetailActive = camera.k >= 1.45 && indiaInView;
+  const indiaDetailLoading =
+    indiaDetailActive && (indiaManifestLoading || indiaTilePendingCount > 0);
+  const indiaDetailReady =
+    camera.k < 4.8
+      ? indiaAdm1Features.length > 0
+      : camera.k < 8.2
+        ? indiaAdm1Features.length > 0 && indiaAdm2Features.length > 0
+        : indiaLocalityRecords.length > 0;
+  const indiaDetailWaiting =
+    indiaDetailActive &&
+    Boolean(indiaTileManifest) &&
+    !indiaDetailReady &&
+    !indiaGeoError;
   const indiaContextActive = selectedId === INDIA_ID || Boolean(geoSelection);
   const showIndiaHierarchy = Boolean(
     indiaGeography && (indiaInView || indiaContextActive) && camera.k >= 1.85
   );
-  const showCountryFieldMarkers = !(showIndiaHierarchy && camera.k >= 2.15);
   const showIndiaAdm1 = showIndiaHierarchy && camera.k >= 1.85;
   const showIndiaAdm2 = showIndiaHierarchy && camera.k >= 4.8;
   const showIndiaLocalities = showIndiaHierarchy && camera.k >= 8.9;
@@ -1731,97 +1770,6 @@ export default function WorldMapExplorer() {
                   </text>
                 );
               })}
-            {showCountryFieldMarkers &&
-              visibleNodes.map((node, index) => {
-                const visible = !nearbyMode || nearbyIds.has(node.id);
-                if (!visible) return null;
-                const isSelected = selectedId === node.id;
-                const total = node.total ?? 0;
-                const screenRadius = isSelected
-                  ? 8
-                  : clamp(
-                      3.4 +
-                        (Math.log10(total + 1) / Math.log10(maxTotal + 1)) * 7 +
-                        Math.log2(Math.max(1, camera.k)) * 0.9,
-                      3.4,
-                      12
-                    );
-                const radius = screenRadius / camera.k;
-                const showGlow = isSelected || (camera.k > 1.2 && index < 80);
-                const fill = isSelected
-                  ? "#ffbf69"
-                  : total > 0
-                    ? "#45d7c0"
-                    : "#647c91";
-                const showLabel = labelIds.has(node.id);
-                return (
-                  <g
-                    key={`node-${node.id}`}
-                    className="cursor-pointer"
-                    onPointerEnter={() => setHovered({ id: node.id })}
-                    onPointerLeave={() => setHovered(null)}
-                    onClick={event => {
-                      event.stopPropagation();
-                      if (
-                        !movedRef.current &&
-                        performance.now() >= suppressClickUntilRef.current
-                      )
-                        focusNode(node, Math.max(3, camera.k));
-                    }}
-                  >
-                    <circle
-                      cx={node.x}
-                      cy={node.y}
-                      r={radius * 2.6}
-                      fill={fill}
-                      opacity={isSelected ? 0.17 : 0.08}
-                      filter={showGlow ? "url(#atlas-world-glow)" : undefined}
-                    />
-                    <circle
-                      cx={node.x}
-                      cy={node.y}
-                      r={radius}
-                      fill={fill}
-                      stroke={isSelected ? "#fff4d8" : "#092033"}
-                      strokeWidth={1 / camera.k}
-                    />
-                    {showLabel && (
-                      <text
-                        x={node.x + radius * 1.6}
-                        y={node.y + 3 / camera.k}
-                        fontSize={
-                          clamp(
-                            11 + Math.log2(Math.max(1, camera.k)) * 1.6,
-                            11,
-                            17
-                          ) / camera.k
-                        }
-                        fontWeight={700}
-                        fill={isSelected ? "#fff2d4" : "#b9e9e1"}
-                        style={{
-                          paintOrder: "stroke",
-                          stroke: "#08111d",
-                          strokeWidth: 3 / camera.k,
-                        }}
-                      >
-                        {shortText(node.name, 22)}
-                      </text>
-                    )}
-                  </g>
-                );
-              })}
-            {nearbyMode && selected && (
-              <circle
-                cx={selected.x}
-                cy={selected.y}
-                r={42 / camera.k}
-                fill="none"
-                stroke="#ffbf69"
-                strokeDasharray={`${5 / camera.k} ${4 / camera.k}`}
-                strokeWidth={1.2 / camera.k}
-                opacity=".7"
-              />
-            )}
           </g>
         </svg>
         <WorldSemanticCanvas
@@ -1867,6 +1815,29 @@ export default function WorldMapExplorer() {
             </>
           )}
         </div>
+        {indiaDetailActive &&
+          (indiaDetailLoading || indiaDetailWaiting || indiaGeoError) && (
+            <div className="mt-2 flex max-w-[min(430px,calc(100vw-1.5rem))] items-center gap-3 rounded-lg border border-[#35536f] bg-[#0b1a2a]/95 px-3 py-2 text-xs text-[#b9ccdc] shadow-xl backdrop-blur">
+              <span className="min-w-0 flex-1">
+                {indiaGeoError
+                  ? "India detail could not be loaded."
+                  : indiaManifestLoading
+                    ? "Fetching India detail index…"
+                    : indiaTilePendingCount > 0
+                      ? `Loading India detail · ${indiaTilePendingCount} tile${indiaTilePendingCount === 1 ? "" : "s"}…`
+                      : "India detail is ready to retry for this viewport."}
+              </span>
+              {indiaGeoError || indiaDetailWaiting ? (
+                <button
+                  type="button"
+                  onClick={retryIndiaDetails}
+                  className="shrink-0 font-semibold text-[#45d7c0] underline-offset-2 hover:underline"
+                >
+                  Retry
+                </button>
+              ) : null}
+            </div>
+          )}
         {nearbyMode && selected && (
           <div className="mt-2 flex items-center gap-3 rounded-lg border border-[#685031] bg-[#1f1a14]/95 px-3 py-2 text-xs text-[#f3d49f] shadow-xl">
             <span>Only nearby fields are shown.</span>
@@ -1905,8 +1876,8 @@ export default function WorldMapExplorer() {
             camera to a field
           </p>
           <p>
-            <span className="mr-2 text-[#ffbf69]">02</span>Click a node to
-            inspect the source record
+            <span className="mr-2 text-[#ffbf69]">02</span>Click a country area
+            to inspect the source record
           </p>
           <p>
             <span className="mr-2 text-[#9babc0]">03</span>India drill-down:

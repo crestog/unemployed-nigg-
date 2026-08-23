@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef } from "react";
 
 export type SemanticBoundary = {
   id: string;
@@ -26,27 +26,29 @@ type WorldSemanticCanvasProps = {
   width: number;
   height: number;
   dpr: number;
+  cameraK: number;
   adm1: SemanticBoundary[];
   adm2: SemanticBoundary[];
   localities: SemanticLocality[];
-  canvasRef?: RefObject<HTMLCanvasElement | null>;
 };
 
 const drawBoundary = (
   context: CanvasRenderingContext2D,
   boundary: SemanticBoundary,
-  path: Path2D
+  path: Path2D,
+  cameraK: number
 ) => {
   const baseColor = boundary.kind === "adm1" ? "#ba7a48" : "#d4ae54";
   context.save();
   context.globalAlpha = boundary.opacity;
-  context.lineWidth = boundary.selected
-    ? boundary.kind === "adm1"
-      ? 1.8
-      : 1.6
-    : boundary.kind === "adm1"
-      ? 0.9
-      : 0.55;
+  context.lineWidth =
+    (boundary.selected
+      ? boundary.kind === "adm1"
+        ? 1.8
+        : 1.6
+      : boundary.kind === "adm1"
+        ? 0.9
+        : 0.55) / cameraK;
   context.strokeStyle = boundary.selected ? "#fff1c7" : baseColor;
   context.fillStyle = boundary.selected ? "#ffbf69" : baseColor;
   context.globalAlpha = boundary.selected
@@ -64,16 +66,17 @@ export default function WorldSemanticCanvas({
   width,
   height,
   dpr,
+  cameraK,
   adm1,
   adm2,
   localities,
-  canvasRef: forwardedCanvasRef,
 }: WorldSemanticCanvasProps) {
-  const localCanvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const pathCacheRef = useRef(new Map<string, { d: string; path: Path2D }>());
+  const safeCameraK = Number.isFinite(cameraK) && cameraK > 0 ? cameraK : 1;
 
   useEffect(() => {
-    const canvas = forwardedCanvasRef?.current ?? localCanvasRef.current;
+    const canvas = canvasRef.current;
     if (!canvas) return;
     const pixelRatio = Math.min(1.5, Math.max(1, dpr));
     canvas.width = Math.max(1, Math.round(width * pixelRatio));
@@ -98,10 +101,10 @@ export default function WorldSemanticCanvas({
     });
 
     adm1.forEach(boundary =>
-      drawBoundary(context, boundary, getPath(boundary))
+      drawBoundary(context, boundary, getPath(boundary), safeCameraK)
     );
     adm2.forEach(boundary =>
-      drawBoundary(context, boundary, getPath(boundary))
+      drawBoundary(context, boundary, getPath(boundary), safeCameraK)
     );
 
     context.textAlign = "center";
@@ -109,10 +112,10 @@ export default function WorldSemanticCanvas({
     adm1.forEach(boundary => {
       if (!boundary.label) return;
       context.save();
-      context.font = "700 13px system-ui, sans-serif";
+      context.font = `700 ${13 / safeCameraK}px system-ui, sans-serif`;
       context.fillStyle = "#f2c18a";
       context.shadowColor = "#08111d";
-      context.shadowBlur = 3;
+      context.shadowBlur = 3 / safeCameraK;
       context.fillText(
         boundary.name.length > 22
           ? `${boundary.name.slice(0, 21)}…`
@@ -125,10 +128,10 @@ export default function WorldSemanticCanvas({
     adm2.forEach(boundary => {
       if (!boundary.label) return;
       context.save();
-      context.font = "650 12px system-ui, sans-serif";
+      context.font = `650 ${12 / safeCameraK}px system-ui, sans-serif`;
       context.fillStyle = "#f2d88e";
       context.shadowColor = "#08111d";
-      context.shadowBlur = 3;
+      context.shadowBlur = 3 / safeCameraK;
       context.fillText(
         boundary.name.length > 18
           ? `${boundary.name.slice(0, 17)}…`
@@ -139,51 +142,49 @@ export default function WorldSemanticCanvas({
       context.restore();
     });
     localities.forEach(locality => {
-      const radius = Math.max(
+      const screenRadius = Math.max(
         2.2,
         Math.min(6.2, 2 + Math.log10(locality.population + 1) * 0.42)
       );
+      const radius = screenRadius / safeCameraK;
       context.save();
       context.beginPath();
       context.arc(
         locality.x,
         locality.y,
-        locality.selected ? radius + 2 : radius,
+        locality.selected ? radius + 2 / safeCameraK : radius,
         0,
         Math.PI * 2
       );
       context.fillStyle = locality.selected ? "#ffbf69" : "#45d7c0";
       context.globalAlpha = locality.selected ? 0.95 : 0.82;
       context.fill();
-      context.lineWidth = 0.7;
+      context.lineWidth = 0.7 / safeCameraK;
       context.strokeStyle = locality.selected ? "#fff1c7" : "#092033";
       context.stroke();
       if (locality.label) {
         context.globalAlpha = 1;
-        context.font = "650 12px system-ui, sans-serif";
+        context.font = `650 ${12 / safeCameraK}px system-ui, sans-serif`;
         context.textAlign = "left";
         context.fillStyle = "#b8eee6";
         context.shadowColor = "#08111d";
-        context.shadowBlur = 3;
+        context.shadowBlur = 3 / safeCameraK;
         context.fillText(
           locality.name.length > 20
             ? `${locality.name.slice(0, 19)}…`
             : locality.name,
-          locality.x + 6,
-          locality.y + 3
+          locality.x + 6 / safeCameraK,
+          locality.y + 3 / safeCameraK
         );
       }
       context.restore();
     });
-  }, [adm1, adm2, dpr, height, width]);
+  }, [adm1, adm2, dpr, height, safeCameraK, width, localities]);
 
   return (
     <canvas
-      ref={node => {
-        localCanvasRef.current = node;
-        if (forwardedCanvasRef) forwardedCanvasRef.current = node;
-      }}
-      className="pointer-events-none absolute inset-0 h-full w-full will-change-transform"
+      ref={canvasRef}
+      className="pointer-events-none absolute inset-0 h-full w-full"
       aria-hidden="true"
     />
   );

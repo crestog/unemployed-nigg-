@@ -193,8 +193,11 @@ const mapCollection = feature(
     .countries
 ) as unknown as GeoJSON.FeatureCollection<GeoJSON.Geometry, { name?: string }>;
 const countryFeatures = mapCollection.features as MapFeature[];
-const MIN_ZOOM = 0.48;
-const MAX_ZOOM = 36;
+// Keep the interaction effectively unbounded while remaining inside CSS/IEEE-754
+// safety. The reference map reaches five-figure zoom values; this leaves room
+// for many more gestures without allowing non-finite transforms.
+const MIN_ZOOM = 0.02;
+const MAX_ZOOM = 1e7;
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 const topologyId = (item: MapFeature) => String(item.id ?? "").padStart(3, "0");
@@ -322,11 +325,8 @@ export default function WorldMapExplorer() {
   );
   const suppressClickUntilRef = useRef(0);
   const cameraRef = useRef<Camera>({ x: 640, y: 380, k: 1 });
-  const paintedCameraRef = useRef<Camera>({ x: 640, y: 380, k: 1 });
   const wheelCommitRef = useRef<number | null>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-  const semanticCanvasRef = useRef<HTMLCanvasElement>(null);
-  const mapGroupRef = useRef<SVGGElement>(null);
+  const sceneRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointer: number; x: number; y: number } | null>(
     null
   );
@@ -350,6 +350,7 @@ export default function WorldMapExplorer() {
   const [indiaGeoError, setIndiaGeoError] = useState<string | null>(null);
   const [geoSelection, setGeoSelection] = useState<GeoSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const previousSizeRef = useRef({ width: 1280, height: 760 });
   const [size, setSize] = useState({ width: 1280, height: 760 });
   const [camera, setCamera] = useState<Camera>({ x: 640, y: 380, k: 1 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -405,48 +406,36 @@ export default function WorldMapExplorer() {
     };
   }, []);
 
-  const writeCommittedCamera = (next: Camera) => {
-    if (!mapGroupRef.current) return;
-    mapGroupRef.current.setAttribute(
-      "transform",
-      `translate(${next.x} ${next.y}) scale(${next.k}) translate(${-size.width / 2} ${-size.height / 2})`
-    );
-  };
-  const writeLiveCamera = (next: Camera) => {
-    const svg = svgRef.current;
-    const semanticCanvas = semanticCanvasRef.current;
-    const base = paintedCameraRef.current;
-    if (!svg || !base) return;
-    const scale = next.k / base.k;
-    const translateX = next.x - base.x * scale;
-    const translateY = next.y - base.y * scale;
-    const transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
-    svg.style.transformOrigin = "0 0";
-    svg.style.transform = transform;
-    if (semanticCanvas) {
-      semanticCanvas.style.transformOrigin = "0 0";
-      semanticCanvas.style.transform = `translate(${next.x - (size.width / 2) * next.k}px, ${next.y - (size.height / 2) * next.k}px) scale(${next.k})`;
-    }
+  const cameraTransform = (next: Camera) =>
+    `translate(${next.x - (size.width / 2) * next.k}px, ${next.y - (size.height / 2) * next.k}px) scale(${next.k})`;
+  const writeCamera = (next: Camera) => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    scene.style.transformOrigin = "0 0";
+    scene.style.transform = cameraTransform(next);
   };
   const applyCamera = (next: Camera, commit = false) => {
-    cameraRef.current = next;
-    // This write is deliberately synchronous. It is a compositor-only
-    // transform of the already-painted scene; React and SVG LOD work wait
-    // until the gesture commits, matching the reference scene architecture.
-    writeLiveCamera(next);
-    if (commit) setCamera(next);
+    const current = cameraRef.current;
+    const normalized: Camera = {
+      k: clamp(
+        Number.isFinite(next.k) ? next.k : current.k,
+        MIN_ZOOM,
+        MAX_ZOOM
+      ),
+      x: Number.isFinite(next.x) ? next.x : current.x,
+      y: Number.isFinite(next.y) ? next.y : current.y,
+    };
+    cameraRef.current = normalized;
+    // One compositor-owned scene contains both SVG geography and Canvas2D
+    // semantics. React/Lod work waits for the gesture commit.
+    writeCamera(normalized);
+    if (commit) setCamera(normalized);
   };
   const commitCamera = () => setCamera(cameraRef.current);
 
   useEffect(() => {
     cameraRef.current = camera;
-    paintedCameraRef.current = camera;
-    writeCommittedCamera(camera);
-    if (svgRef.current) svgRef.current.style.transform = "none";
-    if (semanticCanvasRef.current) {
-      semanticCanvasRef.current.style.transformOrigin = "0 0";
-      semanticCanvasRef.current.style.transform = `translate(${camera.x - (size.width / 2) * camera.k}px, ${camera.y - (size.height / 2) * camera.k}px) scale(${camera.k})`;
-    }
+    writeCamera(camera);
   }, [camera, size.height, size.width]);
 
   useEffect(
@@ -466,6 +455,20 @@ export default function WorldMapExplorer() {
       .then(setRelease)
       .catch((cause: Error) => setError(cause.message));
   }, []);
+
+  useEffect(() => {
+    const previous = previousSizeRef.current;
+    if (previous.width === size.width && previous.height === size.height)
+      return;
+    previousSizeRef.current = size;
+    const current = cameraRef.current;
+    const next = {
+      ...current,
+      x: current.x + ((size.width - previous.width) / 2) * current.k,
+      y: current.y + ((size.height - previous.height) / 2) * current.k,
+    };
+    applyCamera(next, true);
+  }, [size]);
 
   useEffect(() => {
     if (!surfaceRef.current) return;
@@ -1181,10 +1184,11 @@ export default function WorldMapExplorer() {
     applyCamera(next, true);
   };
   const focusGeoPoint = (point: { x: number; y: number }, zoom: number) => {
+    const nextK = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
     const next = {
-      k: clamp(zoom, MIN_ZOOM, MAX_ZOOM),
-      x: size.width / 2 - (point.x - size.width / 2) * zoom,
-      y: size.height / 2 - (point.y - size.height / 2) * zoom,
+      k: nextK,
+      x: size.width / 2 - (point.x - size.width / 2) * nextK,
+      y: size.height / 2 - (point.y - size.height / 2) * nextK,
     };
     applyCamera(next, true);
   };
@@ -1622,225 +1626,214 @@ export default function WorldMapExplorer() {
       onPointerCancel={onPointerCancel}
       onWheel={onWheel}
     >
-      <svg
-        ref={svgRef}
-        className="absolute inset-0 h-full w-full touch-none"
-        style={{ willChange: "transform", transformOrigin: "0 0" }}
-        role="img"
-        aria-label="Interactive source-backed world map"
-        viewBox={`0 0 ${size.width} ${size.height}`}
+      <div
+        ref={sceneRef}
+        className="absolute left-0 top-0 h-full w-full will-change-transform"
+        style={{
+          backgroundColor: "#08111d",
+          backgroundImage:
+            "linear-gradient(rgba(41,68,94,.18) 1px, transparent 1px), linear-gradient(90deg, rgba(41,68,94,.18) 1px, transparent 1px)",
+          backgroundSize: "42px 42px",
+        }}
       >
-        <defs>
-          <pattern
-            id="atlas-world-grid"
-            width="42"
-            height="42"
-            patternUnits="userSpaceOnUse"
-          >
-            <path
-              d="M 42 0 L 0 0 0 42"
-              fill="none"
-              stroke="#b4c9df"
-              strokeOpacity=".08"
-            />
-          </pattern>
-          <filter
-            id="atlas-world-glow"
-            x="-100%"
-            y="-100%"
-            width="300%"
-            height="300%"
-          >
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-        <rect width={size.width} height={size.height} fill="#08111d" />
-        <rect
-          width={size.width}
-          height={size.height}
-          fill="url(#atlas-world-grid)"
-        />
-        <g
-          ref={mapGroupRef}
-          transform={`translate(${camera.x} ${camera.y}) scale(${camera.k}) translate(${-size.width / 2} ${-size.height / 2})`}
+        <svg
+          className="absolute left-0 top-0 h-full w-full touch-none"
+          role="img"
+          aria-label="Interactive source-backed world map"
+          viewBox={`0 0 ${size.width} ${size.height}`}
         >
-          <path
-            d={worldPath}
-            fill="#0c1c2d"
-            stroke="#29445e"
-            strokeWidth={1.2 / camera.k}
-          />
-          {countryPaths.map(({ country, id, key, d }) => {
-            const node = nodeById.get(id);
-            const visible = !nearbyMode || nearbyIds.has(id);
-            const isSelected = selectedId === id;
-            return (
-              <path
-                key={key}
-                d={d}
-                fill={isSelected ? "#263c5c" : visible ? "#10263a" : "#0a1624"}
-                fillOpacity={isSelected ? 0.95 : visible ? 0.72 : 0.18}
-                stroke={
-                  isSelected ? "#ffbf69" : visible ? "#2c4b66" : "#16293c"
-                }
-                strokeWidth={(isSelected ? 2 : 0.7) / camera.k}
-                className="transition-[fill,stroke] duration-150"
-                onPointerEnter={() => node && setHovered({ id })}
-                onPointerLeave={() => setHovered(null)}
-                onClick={event => {
-                  event.stopPropagation();
-                  if (
-                    !movedRef.current &&
-                    performance.now() >= suppressClickUntilRef.current &&
-                    node
-                  )
-                    focusNode(node, Math.max(2.2, camera.k));
-                }}
-              >
-                <title>
-                  {node?.name ?? country.properties?.name ?? "Country"}
-                </title>
-              </path>
-            );
-          })}
-          {countryLabelIds.size > 0 &&
-            nodes.map(node => {
-              if (!countryLabelIds.has(node.id)) return null;
-              const labelSize =
-                clamp(16 + Math.log2(Math.max(1, camera.k)) * 5, 16, 34) /
-                camera.k;
+          <defs>
+            <filter
+              id="atlas-world-glow"
+              x="-100%"
+              y="-100%"
+              width="300%"
+              height="300%"
+            >
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+          <g>
+            <path
+              d={worldPath}
+              fill="#0c1c2d"
+              stroke="#29445e"
+              strokeWidth={1.2 / camera.k}
+            />
+            {countryPaths.map(({ country, id, key, d }) => {
+              const node = nodeById.get(id);
+              const visible = !nearbyMode || nearbyIds.has(id);
+              const isSelected = selectedId === id;
               return (
-                <text
-                  key={`country-label-${node.id}`}
-                  x={node.x}
-                  y={node.y}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fontSize={labelSize}
-                  fontWeight={700}
-                  fill="#c5e8e1"
-                  opacity={clamp(
-                    1.1 - Math.max(0, camera.k - 1) * 0.42,
-                    0.12,
-                    1
-                  )}
-                  pointerEvents="none"
-                  style={{
-                    paintOrder: "stroke",
-                    stroke: "#08111d",
-                    strokeWidth: 3 / camera.k,
-                  }}
-                >
-                  {shortText(node.name, 20)}
-                </text>
-              );
-            })}
-          {showCountryFieldMarkers &&
-            visibleNodes.map((node, index) => {
-              const visible = !nearbyMode || nearbyIds.has(node.id);
-              if (!visible) return null;
-              const isSelected = selectedId === node.id;
-              const total = node.total ?? 0;
-              const screenRadius = isSelected
-                ? 8
-                : clamp(
-                    3.4 +
-                      (Math.log10(total + 1) / Math.log10(maxTotal + 1)) * 7 +
-                      Math.log2(Math.max(1, camera.k)) * 0.9,
-                    3.4,
-                    12
-                  );
-              const radius = screenRadius / camera.k;
-              const showGlow = isSelected || (camera.k > 1.2 && index < 80);
-              const fill = isSelected
-                ? "#ffbf69"
-                : total > 0
-                  ? "#45d7c0"
-                  : "#647c91";
-              const showLabel = labelIds.has(node.id);
-              return (
-                <g
-                  key={`node-${node.id}`}
-                  className="cursor-pointer"
-                  onPointerEnter={() => setHovered({ id: node.id })}
+                <path
+                  key={key}
+                  d={d}
+                  fill={
+                    isSelected ? "#263c5c" : visible ? "#10263a" : "#0a1624"
+                  }
+                  fillOpacity={isSelected ? 0.95 : visible ? 0.72 : 0.18}
+                  stroke={
+                    isSelected ? "#ffbf69" : visible ? "#2c4b66" : "#16293c"
+                  }
+                  strokeWidth={(isSelected ? 2 : 0.7) / camera.k}
+                  className="transition-[fill,stroke] duration-150"
+                  onPointerEnter={() => node && setHovered({ id })}
                   onPointerLeave={() => setHovered(null)}
                   onClick={event => {
                     event.stopPropagation();
                     if (
                       !movedRef.current &&
-                      performance.now() >= suppressClickUntilRef.current
+                      performance.now() >= suppressClickUntilRef.current &&
+                      node
                     )
-                      focusNode(node, Math.max(3, camera.k));
+                      focusNode(node, Math.max(2.2, camera.k));
                   }}
                 >
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={radius * 2.6}
-                    fill={fill}
-                    opacity={isSelected ? 0.17 : 0.08}
-                    filter={showGlow ? "url(#atlas-world-glow)" : undefined}
-                  />
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={radius}
-                    fill={fill}
-                    stroke={isSelected ? "#fff4d8" : "#092033"}
-                    strokeWidth={1 / camera.k}
-                  />
-                  {showLabel && (
-                    <text
-                      x={node.x + radius * 1.6}
-                      y={node.y + 3 / camera.k}
-                      fontSize={
-                        clamp(
-                          11 + Math.log2(Math.max(1, camera.k)) * 1.6,
-                          11,
-                          17
-                        ) / camera.k
-                      }
-                      fontWeight={700}
-                      fill={isSelected ? "#fff2d4" : "#b9e9e1"}
-                      style={{
-                        paintOrder: "stroke",
-                        stroke: "#08111d",
-                        strokeWidth: 3 / camera.k,
-                      }}
-                    >
-                      {shortText(node.name, 22)}
-                    </text>
-                  )}
-                </g>
+                  <title>
+                    {node?.name ?? country.properties?.name ?? "Country"}
+                  </title>
+                </path>
               );
             })}
-          {nearbyMode && selected && (
-            <circle
-              cx={selected.x}
-              cy={selected.y}
-              r={42 / camera.k}
-              fill="none"
-              stroke="#ffbf69"
-              strokeDasharray={`${5 / camera.k} ${4 / camera.k}`}
-              strokeWidth={1.2 / camera.k}
-              opacity=".7"
-            />
-          )}
-        </g>
-      </svg>
-      <WorldSemanticCanvas
-        canvasRef={semanticCanvasRef}
-        width={size.width}
-        height={size.height}
-        dpr={worldDevicePixelRatio}
-        adm1={semanticAdm1}
-        adm2={semanticAdm2}
-        localities={semanticLocalities}
-      />
+            {countryLabelIds.size > 0 &&
+              nodes.map(node => {
+                if (!countryLabelIds.has(node.id)) return null;
+                const labelSize =
+                  clamp(16 + Math.log2(Math.max(1, camera.k)) * 5, 16, 34) /
+                  camera.k;
+                return (
+                  <text
+                    key={`country-label-${node.id}`}
+                    x={node.x}
+                    y={node.y}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={labelSize}
+                    fontWeight={700}
+                    fill="#c5e8e1"
+                    opacity={clamp(
+                      1.1 - Math.max(0, camera.k - 1) * 0.42,
+                      0.12,
+                      1
+                    )}
+                    pointerEvents="none"
+                    style={{
+                      paintOrder: "stroke",
+                      stroke: "#08111d",
+                      strokeWidth: 3 / camera.k,
+                    }}
+                  >
+                    {shortText(node.name, 20)}
+                  </text>
+                );
+              })}
+            {showCountryFieldMarkers &&
+              visibleNodes.map((node, index) => {
+                const visible = !nearbyMode || nearbyIds.has(node.id);
+                if (!visible) return null;
+                const isSelected = selectedId === node.id;
+                const total = node.total ?? 0;
+                const screenRadius = isSelected
+                  ? 8
+                  : clamp(
+                      3.4 +
+                        (Math.log10(total + 1) / Math.log10(maxTotal + 1)) * 7 +
+                        Math.log2(Math.max(1, camera.k)) * 0.9,
+                      3.4,
+                      12
+                    );
+                const radius = screenRadius / camera.k;
+                const showGlow = isSelected || (camera.k > 1.2 && index < 80);
+                const fill = isSelected
+                  ? "#ffbf69"
+                  : total > 0
+                    ? "#45d7c0"
+                    : "#647c91";
+                const showLabel = labelIds.has(node.id);
+                return (
+                  <g
+                    key={`node-${node.id}`}
+                    className="cursor-pointer"
+                    onPointerEnter={() => setHovered({ id: node.id })}
+                    onPointerLeave={() => setHovered(null)}
+                    onClick={event => {
+                      event.stopPropagation();
+                      if (
+                        !movedRef.current &&
+                        performance.now() >= suppressClickUntilRef.current
+                      )
+                        focusNode(node, Math.max(3, camera.k));
+                    }}
+                  >
+                    <circle
+                      cx={node.x}
+                      cy={node.y}
+                      r={radius * 2.6}
+                      fill={fill}
+                      opacity={isSelected ? 0.17 : 0.08}
+                      filter={showGlow ? "url(#atlas-world-glow)" : undefined}
+                    />
+                    <circle
+                      cx={node.x}
+                      cy={node.y}
+                      r={radius}
+                      fill={fill}
+                      stroke={isSelected ? "#fff4d8" : "#092033"}
+                      strokeWidth={1 / camera.k}
+                    />
+                    {showLabel && (
+                      <text
+                        x={node.x + radius * 1.6}
+                        y={node.y + 3 / camera.k}
+                        fontSize={
+                          clamp(
+                            11 + Math.log2(Math.max(1, camera.k)) * 1.6,
+                            11,
+                            17
+                          ) / camera.k
+                        }
+                        fontWeight={700}
+                        fill={isSelected ? "#fff2d4" : "#b9e9e1"}
+                        style={{
+                          paintOrder: "stroke",
+                          stroke: "#08111d",
+                          strokeWidth: 3 / camera.k,
+                        }}
+                      >
+                        {shortText(node.name, 22)}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            {nearbyMode && selected && (
+              <circle
+                cx={selected.x}
+                cy={selected.y}
+                r={42 / camera.k}
+                fill="none"
+                stroke="#ffbf69"
+                strokeDasharray={`${5 / camera.k} ${4 / camera.k}`}
+                strokeWidth={1.2 / camera.k}
+                opacity=".7"
+              />
+            )}
+          </g>
+        </svg>
+        <WorldSemanticCanvas
+          cameraK={camera.k}
+          width={size.width}
+          height={size.height}
+          dpr={worldDevicePixelRatio}
+          adm1={semanticAdm1}
+          adm2={semanticAdm2}
+          localities={semanticLocalities}
+        />
+      </div>
 
       <div
         data-world-overlay

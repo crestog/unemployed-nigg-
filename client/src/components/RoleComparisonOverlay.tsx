@@ -54,9 +54,13 @@ export default function RoleComparisonOverlay() {
     occupations.find(item => item.id === primaryId) ?? occupations[0];
   const compactRoute =
     location.startsWith("/ai/") || location === "/roadmaps/plan";
+  const worldHashActive =
+    location === "/" &&
+    new URLSearchParams(window.location.hash.replace(/^#/, "")).get("world") ===
+      "1";
   return (
     <>
-      {!worldMode && !compactRoute && (
+      {!worldMode && !worldHashActive && !compactRoute && (
         <button
           onClick={() => setOpen(true)}
           className="fixed bottom-5 right-5 z-[60] inline-flex min-h-10 items-center gap-2 border border-[#b95c78] bg-[#fffaf8]/96 px-3 py-2 font-mono text-[9px] uppercase tracking-[0.12em] text-[#9d483c] shadow-lg backdrop-blur transition hover:bg-[#fff1ef] active:scale-[.98] max-sm:bottom-[max(1rem,env(safe-area-inset-bottom))] max-sm:right-3"

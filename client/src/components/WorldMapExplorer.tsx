@@ -687,14 +687,14 @@ export default function WorldMapExplorer() {
     if (!mapView) return false;
     const angularDistance = geoDistance(mapView.center, [79, 23]) * (180 / Math.PI);
     const visibleRadius = mapView.zoom <= 2.8
-      ? 105
+      ? 55
       : mapView.zoom <= 3.8
-        ? 75
+        ? 38
         : mapView.zoom <= 4.8
-          ? 52
+          ? 25
           : mapView.zoom <= 6
-            ? 38
-            : 24;
+            ? 17
+            : 12;
     return angularDistance <= visibleRadius;
   }, [mapView]);
   const viewportGeoBounds = mapView?.bounds ?? null;

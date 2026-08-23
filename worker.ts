@@ -773,6 +773,8 @@ function withAssetCacheHeaders(response: Response, pathname: string) {
       "cache-control",
       "public, max-age=3600, stale-while-revalidate=86400"
     );
+  } else if (pathname === "/data/world-mvt/manifest.json") {
+    headers.set("cache-control", "public, max-age=60, must-revalidate");
   }
   return new Response(response.body, {
     status: response.status,
@@ -852,9 +854,56 @@ async function stateResponse(request: Request, env: Env) {
   return json(await snapshot(env.ATLAS_DB, id));
 }
 
+const PACKED_MVT_PATH = /^\/data\/world-mvt\/([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.pbf$/;
+
+async function packedMvtResponse(request: Request, env: Env): Promise<Response | null> {
+  const match = new URL(request.url).pathname.match(PACKED_MVT_PATH);
+  if (!match) return null;
+  const [, releaseId, layerDirectory, zoom, x, y] = match;
+  const basePath = `/data/world-mvt/${releaseId}/packed/${layerDirectory}/${zoom}/${x}`;
+  const noCompression = { "accept-encoding": "identity" };
+  for (let part = 0; part < 32; part += 1) {
+    const suffix = part === 0 ? "" : `.${part}`;
+    const indexResponse = await env.ASSETS.fetch(
+      new Request(new URL(`${basePath}${suffix}.json`, request.url), { headers: noCompression })
+    );
+    const contentType = indexResponse.headers.get("content-type") || "";
+    if (!indexResponse.ok || !contentType.includes("json")) {
+      if (part === 0) return new Response(null, { status: 404 });
+      break;
+    }
+    const index = (await indexResponse.json()) as Record<string, [number, number]>;
+    const entry = index[y];
+    if (!entry) continue;
+    const [offset, length] = entry;
+    if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length <= 0) return new Response(null, { status: 502 });
+    const shardResponse = await env.ASSETS.fetch(
+      new Request(new URL(`${basePath}${suffix}.bin`, request.url), {
+        headers: { ...noCompression, range: `bytes=${offset}-${offset + length - 1}` },
+      })
+    );
+    if (!shardResponse.ok) return new Response(null, { status: 404 });
+    const payload = new Uint8Array(await shardResponse.arrayBuffer());
+    const start = shardResponse.status === 206 || payload.byteLength === length ? 0 : offset;
+    if (start + length > payload.byteLength) return new Response(null, { status: 502 });
+    const headers = new Headers({
+      "content-type": "application/x-protobuf",
+      "cache-control": "public, max-age=31536000, immutable",
+      "content-length": String(length),
+    });
+    if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+    return new Response(payload.slice(start, start + length), { status: 200, headers });
+  }
+  return new Response(null, { status: 404 });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname.match(PACKED_MVT_PATH)) {
+      const packed = await packedMvtResponse(request, env);
+      if (packed) return packed;
+    }
     if (url.pathname === "/api/state") return stateResponse(request, env);
     if (url.pathname === "/api/ai/roadmap" && request.method === "POST")
       return aiRoadmapResponse(request, env);

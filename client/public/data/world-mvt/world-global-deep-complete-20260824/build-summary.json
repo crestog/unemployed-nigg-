@@ -1,0 +1,59 @@
+{
+  "outputRoot": "/home/ubuntu/startup/atlas-release-base/world-global-local-base-20260824",
+  "releaseId": "world-global-local-base-20260824",
+  "safeVectorLatitude": 80.0,
+  "layers": {
+    "adm1": {
+      "tileZoom": 5,
+      "featureCount": 3218,
+      "invalidOrEmptyFeatures": 6,
+      "tileCount": 333,
+      "tileBytes": 5504204
+    },
+    "adm1Labels": {
+      "tileZoom": 5,
+      "featureCount": 3218,
+      "invalidOrEmptyFeatures": 6,
+      "tileCount": 219,
+      "tileBytes": 258784
+    },
+    "adm2": {
+      "tileZoom": 7,
+      "featureCount": 49343,
+      "invalidOrEmptyFeatures": 6,
+      "tileCount": 3618,
+      "tileBytes": 27279589
+    },
+    "adm2Labels": {
+      "tileZoom": 7,
+      "featureCount": 49343,
+      "invalidOrEmptyFeatures": 6,
+      "tileCount": 2352,
+      "tileBytes": 3809800
+    }
+  },
+  "audits": {
+    "adm1": {
+      "json": "geometry-audit-adm1.json",
+      "csv": "geometry-audit-adm1.csv",
+      "sourceFeatureCount": 3224,
+      "acceptedFeatureCount": 3218,
+      "rejectedFeatureCount": 6,
+      "rejectedReasons": {
+        "outside_safe_vector_latitude": 5,
+        "world_spanning_component": 1
+      }
+    },
+    "adm2": {
+      "json": "geometry-audit-adm2.json",
+      "csv": "geometry-audit-adm2.csv",
+      "sourceFeatureCount": 49349,
+      "acceptedFeatureCount": 49343,
+      "rejectedFeatureCount": 6,
+      "rejectedReasons": {
+        "outside_safe_vector_latitude": 5,
+        "world_spanning_component": 1
+      }
+    }
+  }
+}

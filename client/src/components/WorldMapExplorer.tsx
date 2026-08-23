@@ -13,7 +13,7 @@ import {
   geoPath,
 } from "d3-geo";
 import worldTopology from "world-atlas/countries-50m.json";
-import { type SemanticBoundary, type SemanticLocality } from "./WorldSemanticCanvas";
+import { type SemanticBoundary, type SemanticLocality } from "@/lib/worldSemanticTypes";
 import MapLibreWorldScene, {
   type MapLibreWorldSceneHandle,
 } from "./MapLibreWorldScene";

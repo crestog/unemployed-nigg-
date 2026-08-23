@@ -7,7 +7,7 @@ features that cannot be represented safely in spherical Web Mercator vector
 tiles instead of silently clamping or emitting world-spanning geometry.
 
 Offline prerequisites: ijson, shapely, antimeridian, mapbox-vector-tile,
-pyclipper, and protobuf.
+pyclipper, protobuf, pyproj, and numpy.
 """
 from __future__ import annotations
 
@@ -16,19 +16,31 @@ import csv
 import hashlib
 import json
 import math
+import os
 import shutil
 import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 import ijson
+import numpy as np
 from mapbox_vector_tile import encode
+try:
+    from pyproj import Transformer
+except ImportError:  # pragma: no cover - Kaggle installs pyproj in the build venv
+    Transformer = None  # type: ignore[assignment,misc]
 from mapbox_vector_tile.polygon import make_it_valid
 from shapely import intersection as shapely_intersection
 from shapely.geometry import GeometryCollection, MultiPolygon, Point, Polygon, box, shape
 from shapely.ops import transform, unary_union
+
+WEB_MERCATOR_TRANSFORMER = (
+    Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    if Transformer is not None else None
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_DIR = ROOT / "data" / "raw" / "world" / "geoboundaries"
@@ -119,25 +131,52 @@ def longitude_jump_stats(geometry: Any) -> tuple[float, int]:
     maximum = 0.0
     crossings = 0
     for ring in iter_rings(geometry):
-        for first, second in zip(ring, ring[1:]):
-            jump = abs(second[0] - first[0])
-            maximum = max(maximum, jump)
-            if jump > 180.0 + EPSILON:
-                crossings += 1
+        coordinates = np.asarray(ring, dtype=np.float64)
+        if len(coordinates) < 2:
+            continue
+        jumps = np.abs(np.diff(coordinates[:, 0]))
+        if jumps.size:
+            maximum = max(maximum, float(jumps.max()))
+            crossings += int(np.count_nonzero(jumps > 180.0 + EPSILON))
     return maximum, crossings
 
 
-def polygonal_geometry(geometry: Any) -> Any:
+def _polygon_parts(geometry: Any) -> Iterable[Polygon]:
     if geometry is None or geometry.is_empty:
+        return
+    if isinstance(geometry, Polygon):
+        yield geometry
+    elif isinstance(geometry, MultiPolygon):
+        for part in geometry.geoms:
+            if not part.is_empty:
+                yield part
+    elif isinstance(geometry, GeometryCollection):
+        for part in geometry.geoms:
+            yield from _polygon_parts(part)
+
+
+def polygonal_geometry(geometry: Any, *, allow_point: bool = False) -> Any:
+    """Return only homogeneous polygonal geometry for polygon MVT layers.
+
+    GEOS intersections and make-valid can legally return a GeometryCollection
+    containing polygons plus line/point remnants. mapbox-vector-tile rejects
+    that collection type, so discard non-area remnants and union the polygon
+    parts before encoding. Point labels opt into the separate point path.
+    """
+    if geometry is None or geometry.is_empty:
+        return geometry if geometry is not None else GeometryCollection()
+    if allow_point and isinstance(geometry, Point):
         return geometry
-    if isinstance(geometry, (Point, Polygon, MultiPolygon)):
+    if isinstance(geometry, (Polygon, MultiPolygon)):
         return geometry
-    if isinstance(geometry, GeometryCollection):
-        parts = [part for part in geometry.geoms if isinstance(part, (Polygon, MultiPolygon, Point)) and not part.is_empty]
-        if not parts:
-            return GeometryCollection()
-        return unary_union(parts)
-    return GeometryCollection()
+    parts = list(_polygon_parts(geometry))
+    if not parts:
+        return GeometryCollection()
+    merged = unary_union(parts)
+    if isinstance(merged, GeometryCollection):
+        parts = list(_polygon_parts(merged))
+        return unary_union(parts) if parts else GeometryCollection()
+    return merged
 
 
 def split_antimeridian(geometry: Any) -> Any:
@@ -251,7 +290,11 @@ def prepare_feature(
         audit["inputBbox"] = bbox_json(input_bbox)
         if input_bbox is None:
             raise GeometryRejected("empty_or_nonfinite_geometry")
-        geometry = normalize_longitudes(geometry)
+        # GeoBoundaries is normally already in [-180, 180]. Avoid a Python
+        # callback over every vertex for that common case; normalize only
+        # malformed/out-of-range source coordinates.
+        if input_bbox[0] < -180.0 or input_bbox[2] > 180.0:
+            geometry = normalize_longitudes(geometry)
         normalized_bbox = finite_bbox(geometry)
         audit["normalizedBbox"] = bbox_json(normalized_bbox)
         if normalized_bbox is None:
@@ -328,8 +371,15 @@ def tile_bounds(x: int, y: int, zoom: int) -> tuple[float, float, float, float]:
 
 
 def project_geometry(geometry: Any) -> Any:
-    """Project safe WGS84 geometry without silently clamping latitude."""
+    """Project safe WGS84 geometry without silently clamping latitude.
+
+    pyproj performs the coordinate transform in native code and accepts the
+    vectorized coordinate arrays supplied by Shapely 2.x. The pure-Python
+    callback remains as a deterministic fallback for minimal environments.
+    """
     earth_radius = 6378137.0
+    if WEB_MERCATOR_TRANSFORMER is not None:
+        return transform(WEB_MERCATOR_TRANSFORMER.transform, geometry)
 
     def project(longitude: float, latitude: float, *extra: float) -> tuple[float, float]:
         if not math.isfinite(latitude) or abs(latitude) > SAFE_VECTOR_LATITUDE + EPSILON:
@@ -347,27 +397,44 @@ def buffered_tile_bounds(bounds: tuple[float, float, float, float]) -> tuple[flo
     return west - buffer_meters, south - buffer_meters, east + buffer_meters, north + buffer_meters
 
 
-def encode_tile(layer: str, records: list[dict[str, Any]], x: int, y: int, zoom: int) -> bytes:
+def encode_tile(layer: str, records: list[dict[str, Any]], x: int, y: int, zoom: int, label_only: bool = False) -> bytes:
     bounds = tile_bounds(x, y, zoom)
     clip_bounds = buffered_tile_bounds(bounds)
     features = []
     tile_shape = box(*clip_bounds)
     for record in records:
-        try:
-            clipped_geometry = shapely_intersection(record["geometry"], tile_shape, grid_size=0.01)
-        except Exception:
-            repaired = make_it_valid(record["geometry"])
-            try:
-                clipped_geometry = shapely_intersection(repaired, tile_shape, grid_size=0.01)
-            except Exception:
-                clipped_geometry = shapely_intersection(repaired.buffer(0), tile_shape, grid_size=0.01)
-        clipped = polygonal_geometry(clipped_geometry)
+        geometry = record["geometry"]
+        if label_only:
+            clipped_geometry = geometry
+        else:
+            minx, miny, maxx, maxy = record.get("bounds", geometry.bounds)
+            if minx >= clip_bounds[0] and miny >= clip_bounds[1] and maxx <= clip_bounds[2] and maxy <= clip_bounds[3]:
+                # Most small administrative units already fit inside the
+                # buffered tile. Avoid a costly GEOS intersection in that
+                # common case; the encoder still quantizes to exact bounds.
+                clipped_geometry = geometry
+            else:
+                try:
+                    clipped_geometry = shapely_intersection(geometry, tile_shape, grid_size=0.01)
+                except Exception:
+                    repaired = make_it_valid(geometry)
+                    try:
+                        clipped_geometry = shapely_intersection(repaired, tile_shape, grid_size=0.01)
+                    except Exception:
+                        clipped_geometry = shapely_intersection(repaired.buffer(0), tile_shape, grid_size=0.01)
+        clipped = polygonal_geometry(clipped_geometry, allow_point=label_only)
         if clipped.is_empty:
             continue
-        if not clipped.is_valid:
-            clipped = polygonal_geometry(make_it_valid(clipped))
-        if clipped.is_empty or not clipped.is_valid:
-            continue
+        if label_only:
+            if not isinstance(clipped, Point):
+                continue
+        else:
+            if not isinstance(clipped, (Polygon, MultiPolygon)):
+                continue
+            if not clipped.is_valid:
+                clipped = polygonal_geometry(make_it_valid(clipped))
+            if clipped.is_empty or not isinstance(clipped, (Polygon, MultiPolygon)) or not clipped.is_valid:
+                continue
         features.append({
             "id": record["id"],
             "properties": record["properties"],
@@ -459,6 +526,7 @@ def build_encoded_layer(
     zoom: int,
     output_root: Path,
     label_only: bool = False,
+    workers: int | None = None,
 ) -> dict[str, Any]:
     output_layer = f"{layer}-labels" if label_only else layer
     mvt_layer = "labels" if label_only else layer
@@ -481,6 +549,7 @@ def build_encoded_layer(
             "id": source_record["id"],
             "properties": source_record["properties"],
             "geometry": geometry,
+            "bounds": geometry.bounds,
         }
         for key in tile_keys:
             tiles.setdefault(key, []).append(record)
@@ -488,21 +557,32 @@ def build_encoded_layer(
     tile_files: list[str] = []
     started = time.monotonic()
     total_tiles = len(tiles)
-    progress_line(layer, "tile-encode-start", started, outputLayer=output_layer, records=len(records), candidateTiles=total_tiles, zoom=zoom)
+    workers = max(1, min(4, workers or (os.cpu_count() or 1)))
+    progress_line(layer, "tile-encode-start", started, outputLayer=output_layer, records=len(records), candidateTiles=total_tiles, workers=workers, zoom=zoom)
     last_report = started
-    for tile_index, ((x, y), records_for_tile) in enumerate(sorted(tiles.items()), start=1):
-        payload = encode_tile(mvt_layer, records_for_tile, x, y, zoom)
-        if not payload:
-            continue
+    encoded_tiles: list[tuple[tuple[int, int], bytes]] = []
+    tile_items = sorted(tiles.items())
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="atlas-mvt") as executor:
+        futures = {
+            executor.submit(encode_tile, mvt_layer, records_for_tile, x, y, zoom, label_only): (x, y)
+            for (x, y), records_for_tile in tile_items
+        }
+        for tile_index, future in enumerate(as_completed(futures), start=1):
+            key = futures[future]
+            payload = future.result()
+            if payload:
+                encoded_tiles.append((key, payload))
+            now = time.monotonic()
+            if tile_index == total_tiles or tile_index % 100 == 0 or now - last_report >= PROGRESS_INTERVAL_SECONDS:
+                written_bytes = sum(len(data) for _, data in encoded_tiles)
+                progress_line(layer, "tile-encode", started, outputLayer=output_layer, tiles=f"{tile_index}/{total_tiles}", written=len(encoded_tiles), bytes=written_bytes, workers=workers)
+                last_report = now
+    for (x, y), payload in sorted(encoded_tiles):
         tile_path = layer_root / str(zoom) / str(x) / f"{y}.pbf"
         tile_path.parent.mkdir(parents=True, exist_ok=True)
         tile_path.write_bytes(payload)
         tile_bytes += len(payload)
         tile_files.append(f"{zoom}/{x}/{y}.pbf")
-        now = time.monotonic()
-        if tile_index == total_tiles or tile_index % 100 == 0 or now - last_report >= PROGRESS_INTERVAL_SECONDS:
-            progress_line(layer, "tile-encode", started, outputLayer=output_layer, tiles=f"{tile_index}/{total_tiles}", written=len(tile_files), bytes=tile_bytes)
-            last_report = now
     progress_line(layer, "tile-encode-complete", started, outputLayer=output_layer, tiles=len(tile_files), bytes=tile_bytes)
     return {
         "tileZoom": zoom,
@@ -546,14 +626,14 @@ def write_audit(output_root: Path, audit_rows: list[dict[str, Any]], layer: str)
     }
 
 
-def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path, workers: int | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     started = time.monotonic()
     progress_line(layer, "start", started, source=source_path.name, sourceBytes=source_path.stat().st_size, zoom=zoom)
     records, audit_rows = read_records(source_path, layer, zoom, output_root)
     audit_metadata = write_audit(output_root, audit_rows, layer)
     progress_line(layer, "audit-written", started, sourceFeatures=len(audit_rows), accepted=len(records), rejected=len(audit_rows) - len(records), auditJson=audit_metadata["json"], auditCsv=audit_metadata["csv"])
-    polygon_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=False)
-    label_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=True)
+    polygon_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=False, workers=workers)
+    label_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=True, workers=workers)
     source_metadata = {
         "sourceFile": str(source_path.relative_to(ROOT)),
         "sourceSha256": sha256_file(source_path),
@@ -574,6 +654,8 @@ def main() -> None:
     parser.add_argument("--output-base", type=Path, default=DEFAULT_OUTPUT_BASE)
     parser.add_argument("--release-id", default=DEFAULT_RELEASE)
     parser.add_argument("--layers", nargs="+", choices=("adm1", "adm2"), default=("adm1", "adm2"))
+    parser.add_argument("--workers", type=int, default=None, help="Tile encoder threads per layer; default is up to four based on Kaggle CPU count")
+    parser.add_argument("--parallel-layers", action="store_true", help="Build ADM1 and ADM2 in separate CPU processes")
     args = parser.parse_args()
     source_dir = args.source_dir if args.source_dir.is_absolute() else ROOT / args.source_dir
     output_base = args.output_base if args.output_base.is_absolute() else ROOT / args.output_base
@@ -581,16 +663,37 @@ def main() -> None:
     if output_root.exists():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
-    print(f"[AtlasWorld] build-start release={args.release_id} output={output_root} layers={','.join(args.layers)}", flush=True)
+    workers = max(1, min(4, args.workers or (os.cpu_count() or 1)))
+    print(f"[AtlasWorld] build-start release={args.release_id} output={output_root} layers={','.join(args.layers)} workers={workers} cpuCount={os.cpu_count() or 1} parallelLayers={args.parallel_layers}", flush=True)
     configs = {"adm1": 5, "adm2": 7}
     layers: dict[str, Any] = {}
     audits: dict[str, Any] = {}
+    build_results: dict[str, tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = {}
+    layer_processes = min(len(args.layers), workers) if args.parallel_layers else 1
+    layer_workers = max(1, workers // layer_processes) if args.parallel_layers else workers
+    if args.parallel_layers and len(args.layers) > 1:
+        print(f"[AtlasWorld] phase=parallel-layer-start layers={','.join(args.layers)} processes={layer_processes} workersPerLayer={layer_workers}", flush=True)
+        with ProcessPoolExecutor(max_workers=layer_processes) as executor:
+            futures = {}
+            for layer in args.layers:
+                source_path = source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson"
+                if not source_path.exists():
+                    raise SystemExit(f"Missing source snapshot: {source_path}")
+                print(f"[AtlasWorld] layer-queued layer={layer} source={source_path.name} bytes={source_path.stat().st_size}", flush=True)
+                futures[executor.submit(build_layer, source_path, layer, configs[layer], output_root, layer_workers)] = layer
+            for future in as_completed(futures):
+                layer = futures[future]
+                build_results[layer] = future.result()
+                print(f"[AtlasWorld] layer-process-complete layer={layer}", flush=True)
+    else:
+        for layer in args.layers:
+            source_path = source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson"
+            print(f"[AtlasWorld] layer-start layer={layer} source={source_path.name} bytes={source_path.stat().st_size}", flush=True)
+            if not source_path.exists():
+                raise SystemExit(f"Missing source snapshot: {source_path}")
+            build_results[layer] = build_layer(source_path, layer, configs[layer], output_root, workers=workers)
     for layer in args.layers:
-        source_path = source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson"
-        print(f"[AtlasWorld] layer-start layer={layer} source={source_path.name} bytes={source_path.stat().st_size}", flush=True)
-        if not source_path.exists():
-            raise SystemExit(f"Missing source snapshot: {source_path}")
-        polygon, labels, audit = build_layer(source_path, layer, configs[layer], output_root)
+        polygon, labels, audit = build_results[layer]
         layers[layer] = polygon
         layers[f"{layer}Labels"] = labels
         audits[layer] = audit

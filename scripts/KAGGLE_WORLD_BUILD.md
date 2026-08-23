@@ -4,7 +4,7 @@ Atlas World treats geographic preprocessing as an **offline Kaggle job**. The br
 
 ## What the pipeline builds
 
-The job downloads the official GeoBoundaries CGAZ ADM1 and ADM2 snapshots, records their SHA-256 hashes, normalizes longitudes, splits polygon rings at the 180th meridian, repairs valid winding and geometry, rejects global ADM detail outside the documented safe vector latitude, projects accepted geometry to spherical Web Mercator, clips with an 8-pixel tile buffer, and encodes XYZ Mapbox Vector Tiles. Each source feature also gets one representative point in a separate label layer so polygon clipping cannot duplicate labels across tiles.
+The job downloads the official GeoBoundaries CGAZ ADM1 and ADM2 snapshots, records their SHA-256 hashes, normalizes longitudes, splits polygon rings at the 180th meridian, repairs valid winding and geometry, rejects global ADM detail outside the documented safe vector latitude, projects accepted geometry to spherical Web Mercator with native `pyproj` when available, clips with an 8-pixel tile buffer, and encodes XYZ Mapbox Vector Tiles using bounded tile-worker parallelism. Each source feature also gets one representative point in a separate label layer so polygon clipping cannot duplicate labels across tiles.
 
 The release contains global **country/ADM1/ADM2 reference geography only**. It does not add worldwide cities or localities. India’s specialized ADM1/ADM2/GeoNames locality pipeline remains a separate source. GeoBoundaries attribution, source URLs, source hashes, and CGAZ disputed-area policy are preserved in the generated manifest and notices already shipped with the project.
 
@@ -20,7 +20,7 @@ Run the notebook cells in order. The notebook generates a unique immutable relea
 | --- | --- | --- |
 | Setup | Reads `GITHUB_TOKEN` from Kaggle Secrets and defines a unique release ID | The token is loaded without printing its value |
 | Clone | Clones the latest `main` branch | The current builder and frontend code are present |
-| Dependencies | Installs `ijson`, `shapely`, `antimeridian`, `mapbox-vector-tile`, `pyclipper`, and `protobuf` | Python build environment is ready |
+| Dependencies | Installs `ijson`, `shapely`, `antimeridian`, `mapbox-vector-tile`, `pyclipper`, `protobuf`, `pyproj`, and `numpy` in an isolated build environment | Python build environment is ready without modifying Kaggle’s system packages |
 | Build | Downloads the two official source snapshots and runs `kaggle_build_atlas_world.py` | Four non-empty layers plus JSON/CSV audits are generated |
 | Audit | Reads `geometry-audit-summary.json` and verifies the archive | Polar rejections are listed; world-spanning and invalid geometry failures stop the run |
 | Push check | Shows the new commit and clean status | The wrapper has pushed the validated assets; no credential is printed |
@@ -57,4 +57,4 @@ The builder now prints flushed lines such as:
 
 `read` reports source features parsed, accepted features, rejected features, accepted dateline splits, and polar-policy rejections. `tile-encode` reports candidate tiles, tiles written, bytes, and elapsed time. The release also stores `build-progress-adm1.jsonl` and `build-progress-adm2.jsonl` inside the immutable release directory for post-run inspection. If the process fails, the last printed phase identifies whether the failure happened during source geometry, audit writing, polygon encoding, label encoding, validation, or push.
 
-The copy-paste notebook uses `/kaggle/working/atlas-venv` for build-only packages and invokes the wrapper with `--skip-install`. This prevents the build dependencies from modifying Kaggle’s preinstalled BigFrames/Google packages and avoids the repeated protobuf resolver warnings. The CPU usage shown in Kaggle is expected: Shapely geometry repair, GeoJSON parsing, and MVT encoding are CPU-bound and do not use T4 GPU acceleration.
+The copy-paste notebook uses `/kaggle/working/atlas-venv` for build-only packages and invokes the wrapper with `--skip-install`. This prevents the build dependencies from modifying Kaggle’s preinstalled BigFrames/Google packages and avoids the repeated protobuf resolver warnings. The notebook probes `nvidia-smi` and reports any available GPU, but the exact antimeridian/topology/MVT contract remains CPU-based because those operations are implemented by Shapely and the MVT encoder. The speed path is native `pyproj` plus bounded CPU tile workers; a GPU is not silently counted as being used when no compatible cuSpatial implementation is active.

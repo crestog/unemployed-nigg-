@@ -174,21 +174,36 @@ def validate_release(release_dir: Path) -> dict[str, Any]:
     missing = [layer for layer in REQUIRED_LAYERS if layer not in manifest.get("layers", {})]
     if missing:
         raise SystemExit(f"Generated release is missing required layers: {missing}")
+    total_tiles = 0
     for key in REQUIRED_LAYERS:
         metadata = manifest["layers"][key]
         if metadata["featureCount"] <= 0 or metadata["tileCount"] <= 0:
             raise SystemExit(f"Generated layer is empty: {key}")
-        tile = release_dir / metadata["layerDirectory"] / metadata["tiles"][0]
-        payload = tile.read_bytes()
-        if not payload:
-            raise SystemExit(f"Representative tile is empty: {key} {tile}")
-        decoded = decode(payload)
         source_layer = metadata["mvtSourceLayer"]
-        if source_layer not in decoded or not decoded[source_layer].get("features"):
-            raise SystemExit(f"Representative tile failed validation: {key} {tile}")
-        if metadata.get("labelOnly"):
-            if any(feature.get("geometry", {}).get("type") != "Point" for feature in decoded[source_layer]["features"]):
-                raise SystemExit(f"Label layer contains non-point geometry: {key} {tile}")
+        expected_types = {"Point"} if metadata.get("labelOnly") else {"Polygon", "MultiPolygon"}
+        layer_tiles = metadata.get("tiles", [])
+        if len(layer_tiles) != metadata["tileCount"]:
+            raise SystemExit(f"Tile manifest count mismatch: {key}")
+        print(f"[AtlasWorld] validate-layer-start layer={key} tiles={len(layer_tiles)} expected={','.join(sorted(expected_types))}", flush=True)
+        for tile_index, relative_tile in enumerate(layer_tiles, start=1):
+            tile = release_dir / metadata["layerDirectory"] / relative_tile
+            if not tile.is_file():
+                raise SystemExit(f"Missing generated tile: {key} {tile}")
+            payload = tile.read_bytes()
+            if not payload:
+                raise SystemExit(f"Generated tile is empty: {key} {tile}")
+            decoded = decode(payload)
+            if source_layer not in decoded or not decoded[source_layer].get("features"):
+                raise SystemExit(f"Generated tile failed validation: {key} {tile}")
+            for feature in decoded[source_layer]["features"]:
+                geometry_type = feature.get("geometry", {}).get("type")
+                if geometry_type not in expected_types:
+                    raise SystemExit(f"Unexpected geometry type {geometry_type} in {key} {tile}")
+            if tile_index == len(layer_tiles) or tile_index % 500 == 0:
+                print(f"[AtlasWorld] validate-layer layer={key} tiles={tile_index}/{len(layer_tiles)}", flush=True)
+            total_tiles += 1
+        print(f"[AtlasWorld] validate-layer-complete layer={key} tiles={len(layer_tiles)}", flush=True)
+    print(f"[AtlasWorld] validate-all-tiles-complete tiles={total_tiles}", flush=True)
     if "Web Mercator" not in manifest.get("coordinateSystem", ""):
         raise SystemExit("Manifest does not identify the projected Web Mercator build")
     if manifest.get("geometryPolicy", {}).get("safeVectorLatitude") != 80.0:
@@ -221,6 +236,7 @@ def main() -> None:
     parser.add_argument("--skip-install", action="store_true")
     parser.add_argument("--no-push", action="store_true", help="Build and validate without requiring GITHUB_TOKEN")
     parser.add_argument("--archive", type=Path, default=None)
+    parser.add_argument("--workers", type=int, default=None, help="Tile encoder threads; defaults to up to four based on CPU count")
     args = parser.parse_args()
 
     repo = args.repo_dir.resolve()
@@ -232,7 +248,7 @@ def main() -> None:
     if not args.skip_install:
         run([
             sys.executable, "-m", "pip", "install", "--quiet",
-            "ijson", "shapely", "antimeridian", "mapbox-vector-tile", "pyclipper", "protobuf",
+            "ijson", "shapely", "antimeridian", "mapbox-vector-tile", "pyclipper", "protobuf", "pyproj", "numpy",
         ])
 
     source_dir = repo / "data" / "raw" / "world" / "geoboundaries"
@@ -250,6 +266,9 @@ def main() -> None:
             str(source_dir),
             "--release-id",
             args.release_id,
+            "--workers",
+            str(max(1, min(4, args.workers or (os.cpu_count() or 1)))),
+            "--parallel-layers",
         ], cwd=repo)
         print(f"[AtlasWorld] phase=builder-complete release={args.release_id}", flush=True)
 

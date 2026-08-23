@@ -48,7 +48,7 @@ type LocalityRecord = {
   selected: boolean;
 };
 
-type PickKind = "country" | "adm1" | "adm2" | "locality";
+type PickKind = "country" | "adm1" | "adm2" | "adm3" | "adm4" | "adm5" | "locality";
 
 export type MapLibreWorldSceneHandle = {
   setView: (view: ViewState) => void;
@@ -338,165 +338,162 @@ function sourceSetData(map: MapLibreMap, sourceId: string, data: GeoJSON.Feature
 }
 
 function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
-  const adm1Source = "atlas-global-adm1";
-  const adm1LabelSource = "atlas-global-adm1-labels";
-  const adm2Source = "atlas-global-adm2";
-  const adm2LabelSource = "atlas-global-adm2-labels";
-  const layers = manifest.layers as GlobalMvtManifest["layers"] & {
-    adm1Labels?: GlobalMvtManifest["layers"]["adm1Labels"];
-    adm2Labels?: GlobalMvtManifest["layers"]["adm2Labels"];
-  };
-  const hasDedicatedLabelTiles = Boolean(layers.adm1Labels && layers.adm2Labels);
-  // Global and India are separate ownership domains. A global feature without
-  // an explicit source country is not allowed to render because it cannot be
-  // safely excluded from the specialized India source.
+  const keys = Object.keys(manifest.layers)
+    .filter(key => /^adm[1-5]$/.test(key))
+    .sort((a, b) => Number(a.slice(3)) - Number(b.slice(3)));
+  if (!keys.length) return;
   const globalNonIndiaFilter = [
     "all",
     ["has", "countryCode"],
     ["!=", ["get", "countryCode"], "IND"],
   ] as any;
-  if (!map.getSource(adm1Source)) {
-    map.addSource(adm1Source, {
-      type: "vector",
-      tiles: [globalMvtTileUrl(manifest, "adm1")],
-      minzoom: manifest.layers.adm1.tileZoom,
-      maxzoom: manifest.layers.adm1.tileZoom,
-      promoteId: "atlasId",
-    });
-  }
-  if (hasDedicatedLabelTiles && !map.getSource(adm1LabelSource)) {
-    map.addSource(adm1LabelSource, {
-      type: "vector",
-      tiles: [globalMvtTileUrl(manifest, "adm1Labels")],
-      minzoom: layers.adm1Labels!.tileZoom,
-      maxzoom: layers.adm1Labels!.tileZoom,
-      promoteId: "atlasId",
-    });
-  }
-  if (!map.getSource(adm2Source)) {
-    map.addSource(adm2Source, {
-      type: "vector",
-      tiles: [globalMvtTileUrl(manifest, "adm2")],
-      minzoom: manifest.layers.adm2.tileZoom,
-      maxzoom: manifest.layers.adm2.tileZoom,
-      promoteId: "atlasId",
-    });
-  }
-  if (hasDedicatedLabelTiles && !map.getSource(adm2LabelSource)) {
-    map.addSource(adm2LabelSource, {
-      type: "vector",
-      tiles: [globalMvtTileUrl(manifest, "adm2Labels")],
-      minzoom: layers.adm2Labels!.tileZoom,
-      maxzoom: layers.adm2Labels!.tileZoom,
-      promoteId: "atlasId",
-    });
-  }
+  const colors = ["#738b76", "#8a9870", "#9b8365", "#777d9b", "#7d9b8a"];
   const insertBefore = "atlas-adm1-fill";
-  if (!map.getLayer("atlas-global-adm1-fill")) {
-    map.addLayer({
-      id: "atlas-global-adm1-fill",
-      type: "fill",
-      source: adm1Source,
-      "source-layer": "adm1",
-      filter: globalNonIndiaFilter,
-      minzoom: 5,
-      maxzoom: 7.15,
-      paint: {
-        "fill-color": "#738b76",
-        // ADM1 fill fades out before ADM2 fill becomes authoritative. This
-        // prevents two semi-transparent administrative paint stacks at the
-        // same zoom while retaining the ADM1 boundary line for orientation.
-        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.12, 6.7, 0.1, 7.0, 0.03, 7.15, 0],
-      },
-    }, insertBefore);
-    map.addLayer({
-      id: "atlas-global-adm1-line",
-      type: "line",
-      source: adm1Source,
-      "source-layer": "adm1",
-      filter: globalNonIndiaFilter,
-      minzoom: 5,
-      maxzoom: 7.2,
-      paint: {
-        "line-color": "#b9c79b",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.25, 7.2, 1.05],
-        "line-opacity": 0.7,
-      },
-    }, insertBefore);
-    if (hasDedicatedLabelTiles) {
+
+  keys.forEach((key, index) => {
+    const metadata = manifest.layers[key];
+    const level = Number(key.slice(3));
+    const labelKey = `${key}Labels`;
+    const labelMetadata = manifest.layers[labelKey];
+    const sourceId = `atlas-global-${key}`;
+    const labelSourceId = `atlas-global-${labelKey}`;
+    const sourceLayer = metadata.mvtSourceLayer ?? key;
+    const labelSourceLayer = labelMetadata?.mvtSourceLayer ?? "labels";
+    const sourceFilter = globalNonIndiaFilter;
+    const nextKey = keys[index + 1];
+    const nextStart = nextKey
+      ? Math.max(metadata.tileZoom + 0.4, manifest.layers[nextKey].tileZoom - 0.25)
+      : 22;
+    const minzoom = metadata.tileZoom;
+
+    if (!map.getSource(sourceId)) {
+      map.addSource(sourceId, {
+        type: "vector",
+        tiles: [globalMvtTileUrl(manifest, key)],
+        minzoom: metadata.tileZoom,
+        maxzoom: metadata.tileZoom,
+        promoteId: "atlasId",
+      });
+    }
+    if (labelMetadata && !map.getSource(labelSourceId)) {
+      map.addSource(labelSourceId, {
+        type: "vector",
+        tiles: [globalMvtTileUrl(manifest, labelKey)],
+        minzoom: labelMetadata.tileZoom,
+        maxzoom: labelMetadata.tileZoom,
+        promoteId: "atlasId",
+      });
+    }
+
+    const fillId = `atlas-global-${key}-fill`;
+    const lineId = `atlas-global-${key}-line`;
+    const labelId = `atlas-global-${key}-label`;
+    if (!map.getLayer(fillId)) {
       map.addLayer({
-        id: "atlas-global-adm1-label",
+        id: fillId,
+        type: "fill",
+        source: sourceId,
+        "source-layer": sourceLayer,
+        filter: sourceFilter as any,
+        minzoom,
+        maxzoom: nextStart,
+        paint: {
+          "fill-color": colors[index % colors.length],
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], minzoom, 0.05, minzoom + 0.8, 0.12, nextStart, 0],
+        },
+      }, insertBefore);
+    }
+    if (!map.getLayer(lineId)) {
+      map.addLayer({
+        id: lineId,
+        type: "line",
+        source: sourceId,
+        "source-layer": sourceLayer,
+        filter: sourceFilter as any,
+        minzoom,
+        maxzoom: Math.min(22, nextStart + 0.2),
+        paint: {
+          "line-color": colors[index % colors.length],
+          "line-width": ["interpolate", ["linear"], ["zoom"], minzoom, 0.25, minzoom + 2, 0.9],
+          "line-opacity": ["interpolate", ["linear"], ["zoom"], minzoom, 0.45, nextStart, 0],
+        },
+      }, insertBefore);
+    }
+    if (labelMetadata && !map.getLayer(labelId)) {
+      map.addLayer({
+        id: labelId,
         type: "symbol",
-        source: adm1LabelSource,
-        "source-layer": "labels",
-        filter: globalNonIndiaFilter,
-        minzoom: 5,
-        maxzoom: 7.25,
+        source: labelSourceId,
+        "source-layer": labelSourceLayer,
+        filter: ["all", sourceFilter, ["==", ["get", "label"], true]] as any,
+        minzoom: minzoom + 0.1,
+        maxzoom: nextStart,
         layout: {
           "text-field": ["get", "name"],
           "text-font": ["Open Sans Semibold"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 5, 8, 6.2, 12, 7.25, 15],
+          "text-size": ["interpolate", ["linear"], ["zoom"], minzoom + 0.1, Math.max(7, 12 - level), minzoom + 2.4, Math.max(9, 15 - level * 0.4)],
           "text-max-width": 7,
           "text-padding": 2,
           "text-allow-overlap": false,
           "text-ignore-placement": false,
         },
-        paint: { "text-color": "#b6f1e2", "text-halo-color": "#061423", "text-halo-width": 1.1 },
+        paint: { "text-color": "#d6f4e8", "text-halo-color": "#061423", "text-halo-width": 1.1 },
       }, insertBefore);
     }
-  }
-  if (!map.getLayer("atlas-global-adm2-fill")) {
-    map.addLayer({
-      id: "atlas-global-adm2-fill",
-      type: "fill",
-      source: adm2Source,
-      "source-layer": "adm2",
-      filter: globalNonIndiaFilter,
-      minzoom: 7.1,
-      maxzoom: 12,
-      paint: {
-        "fill-color": "#8a9870",
-        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 7.1, 0.02, 7.8, 0.09, 12, 0.14],
-      },
+  });
 
-    }, insertBefore);
+  const places = manifest.layers.placesLabels;
+  if (places && !map.getSource("atlas-global-places")) {
+    map.addSource("atlas-global-places", {
+      type: "vector",
+      tiles: [globalMvtTileUrl(manifest, "placesLabels")],
+      minzoom: places.tileZoom,
+      maxzoom: places.tileZoom,
+      promoteId: "atlasId",
+    });
+  }
+  if (places && !map.getLayer("atlas-global-places-circle")) {
     map.addLayer({
-      id: "atlas-global-adm2-line",
-      type: "line",
-      source: adm2Source,
-      "source-layer": "adm2",
-      filter: globalNonIndiaFilter,
-      minzoom: 7.1,
-      maxzoom: 12,
+      id: "atlas-global-places-circle",
+      type: "circle",
+      source: "atlas-global-places",
+      "source-layer": places.mvtSourceLayer ?? "labels",
+      minzoom: places.tileZoom,
+      maxzoom: 22,
+      filter: ["all", ["has", "countryCode"], ["!=", ["get", "countryCode"], "IN"], ["==", ["get", "label"], true]] as any,
       paint: {
-        "line-color": "#d8c38f",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 7.1, 0.18, 12, 0.8],
-        "line-opacity": 0.62,
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], places.tileZoom, 1.2, places.tileZoom + 4, 3.2, 18, 5],
+        "circle-color": "#45d7c0",
+        "circle-stroke-color": "#061423",
+        "circle-stroke-width": 0.8,
+        "circle-opacity": 0.75,
       },
     }, insertBefore);
-    if (hasDedicatedLabelTiles) {
-      map.addLayer({
-        id: "atlas-global-adm2-label",
-        type: "symbol",
-        source: adm2LabelSource,
-        "source-layer": "labels",
-        filter: globalNonIndiaFilter,
-        minzoom: 7.25,
-        maxzoom: 12,
-        layout: {
-          "text-field": ["get", "name"],
-          "text-font": ["Open Sans Semibold"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 7.25, 7, 10, 10, 12, 12],
-          "text-max-width": 6,
-          "text-padding": 2,
-          "text-allow-overlap": false,
-          "text-ignore-placement": false,
-        },
-        paint: { "text-color": "#f4d6a7", "text-halo-color": "#061423", "text-halo-width": 1 },
-      }, insertBefore);
-    }
+  }
+  if (places && !map.getLayer("atlas-global-places-label")) {
+    map.addLayer({
+      id: "atlas-global-places-label",
+      type: "symbol",
+      source: "atlas-global-places",
+      "source-layer": places.mvtSourceLayer ?? "labels",
+      minzoom: places.tileZoom + 0.5,
+      maxzoom: 22,
+      filter: ["all", ["has", "countryCode"], ["!=", ["get", "countryCode"], "IN"], ["==", ["get", "label"], true]] as any,
+      layout: {
+        "text-field": ["get", "name"],
+        "text-font": ["Open Sans Semibold"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], places.tileZoom + 0.5, 8, 16, 12, 22, 15],
+        "text-offset": [0.8, 0],
+        "text-anchor": "left",
+        "text-padding": 2,
+        "text-allow-overlap": false,
+        "text-ignore-placement": false,
+      },
+      paint: { "text-color": "#9fffee", "text-halo-color": "#061423", "text-halo-width": 1.1 },
+    }, insertBefore);
   }
 }
+
 
 const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function MapLibreWorldScene(
   { initialView, countries, countryLabels, adm1, adm2, localities, globalMvt, spinEnabled = true, onViewChange, onPick, onUnavailable },
@@ -598,13 +595,18 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         onViewChangeRef.current?.(toView(map));
       });
       map.on("move", () => onViewChangeRef.current?.(toView(map)));
-      const pickLayers = ["atlas-locality-circle", "atlas-adm2-fill", "atlas-global-adm2-fill", "atlas-adm1-fill", "atlas-global-adm1-fill", "atlas-country-fill"];
-      map.on("click", pickLayers, event => {
-        const feature = event.features?.[0];
+      map.on("click", event => {
+        const feature = map.queryRenderedFeatures(event.point).find((candidate: MapGeoJSONFeature) => {
+          const id = candidate.layer.id;
+          return id === "atlas-locality-circle" || id === "atlas-global-places-circle" || id === "atlas-country-fill" || /atlas-global-adm[1-5]-fill$/.test(id) || /^atlas-adm[12]-fill$/.test(id);
+        });
         const id = feature?.properties?.atlasId ?? feature?.id;
         if (!feature || id === undefined || id === null) return;
         const layer = feature.layer.id;
-        const kind: PickKind = layer.includes("locality") ? "locality" : layer.includes("adm2") ? "adm2" : layer.includes("adm1") ? "adm1" : "country";
+        const globalLevel = layer.match(/atlas-global-(adm[1-5])-fill$/)?.[1] as PickKind | undefined;
+        const kind: PickKind = layer.includes("locality") || layer.includes("places")
+          ? "locality"
+          : globalLevel ?? (layer.includes("adm2") ? "adm2" : layer.includes("adm1") ? "adm1" : "country");
         onPickRef.current?.({ kind, id: String(id), feature });
       });
       map.on("error", event => {

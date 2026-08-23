@@ -168,7 +168,7 @@ type GeographySource = {
   termsUrl?: string;
   extract?: string | null;
 };
-type GeoEntityKind = "country" | "adm1" | "adm2" | "locality";
+type GeoEntityKind = "country" | "adm1" | "adm2" | "adm3" | "adm4" | "adm5" | "locality";
 type GeoSelection = {
   scope: "global" | "india";
   kind: GeoEntityKind;
@@ -291,14 +291,12 @@ const geoKindLabel = (kind: GeoEntityKind) =>
       ? "State / union territory"
       : kind === "adm2"
         ? "District"
-        : "City / locality";
+        : kind === "locality"
+          ? "City / locality"
+          : `Administrative level ${kind.slice(3)}`;
 const selectionKindLabel = (selection: Pick<GeoSelection, "scope" | "kind">) =>
-  selection.scope === "global"
-    ? selection.kind === "adm1"
-      ? "Administrative level 1"
-      : selection.kind === "adm2"
-        ? "Administrative level 2"
-        : geoKindLabel(selection.kind)
+  selection.scope === "global" && selection.kind.startsWith("adm")
+    ? `Administrative level ${selection.kind.slice(3)}`
     : geoKindLabel(selection.kind);
 const normalizeD3Geometry = (geometry: GeoJSON.Geometry): GeoJSON.Geometry => {
   if (geometry.type === "Polygon") {
@@ -1050,13 +1048,17 @@ export default function WorldMapExplorer() {
     focusGeoPoint(center, kind === "adm1" ? 4.1 : kind === "adm2" ? 7.2 : 12.5);
   };
   const selectGlobalEntity = (
-    kind: "adm1" | "adm2",
+    kind: "adm1" | "adm2" | "adm3" | "adm4" | "adm5" | "locality",
     id: string,
     name: string,
-    feature?: GeoJSON.Feature
+    feature?: GeoJSON.Feature,
+    details: { population?: number; featureCode?: string } = {},
   ) => {
     rememberSelectionCamera();
     setSelectedId(null);
+    const layerSource = kind === "locality"
+      ? globalMvtManifest?.layers.placesLabels?.sourceMetadata?.[0]
+      : undefined;
     setGeoSelection({
       scope: "global",
       kind,
@@ -1064,18 +1066,29 @@ export default function WorldMapExplorer() {
       name,
       parentId: null,
       source: {
-        publisher: globalMvtManifest?.source.publisher ?? "geoBoundaries / William & Mary geoLab",
-        sourceUrl: globalMvtManifest?.source.sourceUrl ?? "https://www.geoboundaries.org/globalDownloads.html",
-        license: globalMvtManifest?.source.license ?? "Attribution required",
+        publisher: kind === "locality" ? "GeoNames" : (globalMvtManifest?.source.publisher ?? "geoBoundaries / William & Mary geoLab"),
+        sourceUrl: layerSource?.sourceUrl ?? globalMvtManifest?.source.sourceUrl ?? "https://www.geoboundaries.org/globalDownloads.html",
+        license: layerSource?.sourceLicense ?? globalMvtManifest?.source.license ?? "Attribution required",
+        termsUrl: layerSource?.licenseSource ?? undefined,
       },
-      description: kind === "adm1"
+      description: kind === "locality"
+        ? "GeoNames populated-place reference point. It is a place-name and population reference, not evidence of an organization, business, or activity."
+        : kind === "adm1"
         ? "Global administrative level 1 reference geometry from the geoBoundaries CGAZ composite."
-        : "Global administrative level 2 reference geometry from the geoBoundaries CGAZ composite.",
+        : kind === "adm2"
+          ? "Global administrative level 2 reference geometry from the geoBoundaries CGAZ composite."
+          : `Country-specific geoBoundaries ${kind.toUpperCase()} reference geometry. Availability and source year vary by country; this record does not claim uniform worldwide coverage.`,
       point: { x: 0, y: 0 },
+      ...details,
     });
     setQuery("");
     setShowResults(false);
-    if (feature) mapSceneRef.current?.focusFeature(feature, kind === "adm1" ? 4.8 : 7.2);
+    if (feature) {
+      const focusZoom = kind === "locality"
+        ? 9.3
+        : { adm1: 4.8, adm2: 7.2, adm3: 9.3, adm4: 11.3, adm5: 13.3 }[kind];
+      mapSceneRef.current?.focusFeature(feature, focusZoom);
+    }
   };
   const focusGeoResult = (result: GeoSearchResult) => {
     selectGeoEntity(
@@ -1179,6 +1192,13 @@ export default function WorldMapExplorer() {
       indiaAdm2Features.find(item => item.id === geoSelection.parentId)?.name ??
       null)
     : null;
+  const availableGlobalLevels = useMemo(
+    () => Object.keys(globalMvtManifest?.layers ?? {})
+      .filter(key => /^adm[1-5]$/.test(key))
+      .map(key => Number(key.slice(3)))
+      .sort((a, b) => a - b),
+    [globalMvtManifest]
+  );
   const currentGeoLevel = geoSelection
     ? selectionKindLabel(geoSelection)
       : indiaInView && mapZoom >= INDIA_LOCALITY_ZOOM
@@ -1187,11 +1207,9 @@ export default function WorldMapExplorer() {
         ? "District"
         : indiaInView && mapZoom >= INDIA_ADM1_ZOOM
           ? "State / union territory"
-          : mapZoom >= GLOBAL_ADM2_MAP_ZOOM
-            ? "Global administrative level 2"
-            : mapZoom >= GLOBAL_ADM1_MAP_ZOOM
-              ? "Global administrative level 1"
-              : "Country overview";
+          : availableGlobalLevels.length && mapZoom >= GLOBAL_ADM1_MAP_ZOOM
+            ? `Global administrative level ${availableGlobalLevels.filter(level => mapZoom >= (globalMvtManifest?.layers[`adm${level}`]?.tileZoom ?? 99)).at(-1) ?? 1}`
+            : "Country overview";
   const semanticAdm1 = useMemo<SemanticBoundary[]>(() => {
     if (!showIndiaAdm1) return [];
     return indiaAdm1Render.map(item => ({
@@ -1313,7 +1331,7 @@ export default function WorldMapExplorer() {
     label: indiaLocalityLabelIds.has(item.record.id),
     selected: geoSelection?.kind === "locality" && geoSelection.id === item.record.id,
   })), [geoSelection, indiaLocalityLabelIds, visibleIndiaLocalities]);
-  const onMapPick = (pick: { kind: "country" | "adm1" | "adm2" | "locality"; id: string; feature?: { source?: string; sourceLayer?: string; geometry?: GeoJSON.Geometry; properties?: Record<string, unknown> } }) => {
+  const onMapPick = (pick: { kind: "country" | "adm1" | "adm2" | "adm3" | "adm4" | "adm5" | "locality"; id: string; feature?: { source?: string; sourceLayer?: string; geometry?: GeoJSON.Geometry; properties?: Record<string, unknown> } }) => {
     if (pick.kind === "country") {
       const node = nodeById.get(pick.id);
       if (node) focusNode(node);
@@ -1321,7 +1339,27 @@ export default function WorldMapExplorer() {
     }
     const sourceName = String(pick.feature?.source ?? "");
     const sourceLayer = String(pick.feature?.sourceLayer ?? "");
-    if ((pick.kind === "adm1" || pick.kind === "adm2") && (sourceName.startsWith("atlas-global-") || sourceLayer === pick.kind)) {
+    const isGlobalAdmin = /^adm[1-5]$/.test(pick.kind);
+    if (pick.kind === "locality" && sourceName === "atlas-global-places") {
+      const properties = pick.feature?.properties ?? {};
+      selectGlobalEntity(
+        "locality",
+        pick.id,
+        String(properties.name ?? `Place ${pick.id}`),
+        pick.feature?.geometry ? {
+          type: "Feature",
+          id: pick.id,
+          properties,
+          geometry: pick.feature.geometry,
+        } as GeoJSON.Feature : undefined,
+        {
+          population: Number.isFinite(Number(properties.population)) ? Number(properties.population) : undefined,
+          featureCode: String(properties.featureCode ?? "") || undefined,
+        },
+      );
+      return;
+    }
+    if (isGlobalAdmin && (sourceName.startsWith("atlas-global-") || sourceLayer === pick.kind)) {
       const name = String(pick.feature?.properties?.name ?? `${pick.kind.toUpperCase()} ${pick.id}`);
       selectGlobalEntity(pick.kind, pick.id, name, pick.feature?.geometry ? {
         type: "Feature",
@@ -1485,9 +1523,9 @@ export default function WorldMapExplorer() {
         </div>
         <p className="mt-3 text-sm leading-6 text-[#b4c4d5]">
           Drag to roam. Zoom at the cursor. Country labels give way to
-          precomputed worldwide administrative boundaries, with India’s
-          specialized states, districts, and GeoNames place references at
-          deeper scale.
+          precomputed worldwide administrative boundaries at the deepest
+          level available for the country, with source-backed place references
+          rendered as a separate layer when available.
         </p>
         <section className="mt-4 border border-[#294761] bg-[#0d2234]/80 p-3">
           <div className="flex items-center justify-between gap-3 font-mono text-[9px] uppercase tracking-[.12em] text-[#8fe7d8]">
@@ -1497,14 +1535,14 @@ export default function WorldMapExplorer() {
           {globalMvtManifest ? (
             <>
               <p className="mt-2 text-[11px] leading-5 text-[#b4c4d5]">
-                GeoBoundaries CGAZ static release <span className="font-mono text-[#e6f3f2]">{globalMvtManifest.releaseId}</span> supplies worldwide ADM1 and ADM2 reference geometry.
+                GeoBoundaries static release <span className="font-mono text-[#e6f3f2]">{globalMvtManifest.releaseId}</span> supplies global ADM1/ADM2 plus country-specific deeper levels where the source inventory provides them.
               </p>
               <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[9px] uppercase tracking-[.08em] text-[#8297ac]">
                 <span>{globalMvtManifest.layers.adm1.featureCount.toLocaleString()} ADM1</span>
                 <span>{globalMvtManifest.layers.adm2.featureCount.toLocaleString()} ADM2</span>
               </div>
               <p className="mt-2 text-[10px] leading-4 text-[#8297ac]">
-                Global localities are not included yet. {globalMvtManifest.geometryPolicy?.safeVectorLatitude != null ? `Global ADM detail above ${globalMvtManifest.geometryPolicy.safeVectorLatitude}° latitude is omitted by the Web Mercator policy.` : "Polar detail policy is not present in this older release."} <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
+                {Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).length ? `Deep administrative levels available: ${Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).sort().join(", ").toUpperCase()}.` : "No global deep administrative levels are present in this release yet."} Global place points remain a separate source layer. {globalMvtManifest.geometryPolicy?.safeVectorLatitude != null ? `Detail above ${globalMvtManifest.geometryPolicy.safeVectorLatitude}° latitude is omitted by the Web Mercator policy.` : "Polar detail policy is not present in this older release."} <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
               </p>
             </>
           ) : (
@@ -1521,8 +1559,8 @@ export default function WorldMapExplorer() {
             to inspect the source record
           </p>
           <p>
-            <span className="mr-2 text-[#9babc0]">03</span>India drill-down:
-            state → district → city
+            <span className="mr-2 text-[#9babc0]">03</span>Country drill-down:
+            deepest source-backed administrative level available
           </p>
           <p>
             <span className="mr-2 text-[#9babc0]">04</span>Every geographic
@@ -1626,8 +1664,11 @@ export default function WorldMapExplorer() {
           </span>
           <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
             {nodes.length} country fields
+            {globalMvtManifest
+              ? ` · ${availableGlobalLevels.length} global admin levels`
+              : ""}
             {indiaGeography
-              ? ` · ${indiaGeography.layers.adm1.features.length} states · ${indiaGeography.layers.adm2.features.length} districts`
+              ? ` · India ${indiaGeography.layers.adm1.features.length} states · ${indiaGeography.layers.adm2.features.length} districts`
               : ""}
           </span>
         </div>

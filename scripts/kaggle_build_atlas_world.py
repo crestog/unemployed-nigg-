@@ -16,6 +16,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,16 +30,18 @@ SOURCE_URLS = {
     "adm1": "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM1.geojson",
     "adm2": "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM2.geojson",
 }
+GEONAMES_CITIES_URL = "https://download.geonames.org/export/dump/cities500.zip"
 DEFAULT_REPO_URL = "https://github.com/crestog/unemployed-nigg-.git"
 DEFAULT_REPO = Path("/kaggle/working/atlas-repo")
 DEFAULT_RELEASE = f"world-global-geoboundaries-kaggle-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-REQUIRED_LAYERS = ("adm1", "adm1Labels", "adm2", "adm2Labels")
+BASE_REQUIRED_LAYERS = ("adm1", "adm1Labels", "adm2", "adm2Labels", "placesLabels")
 ALLOWED_REJECTION_REASONS = {
     "outside_safe_vector_latitude",
     "missing_geometry",
     "empty_or_nonfinite_geometry",
     "empty_or_nonfinite_normalized_geometry",
     "no_polygonal_components",
+    "not_a_point",
 }
 HARD_REJECTION_MARKERS = (
     "world_spanning",
@@ -114,7 +117,8 @@ def validate_audits(release_dir: Path) -> dict[str, Any]:
     manifest = json.loads((release_dir / "manifest.json").read_text(encoding="utf-8"))
     failures: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}
-    for layer in ("adm1", "adm2"):
+    audit_layers = sorted(manifest.get("geometryAudits", {}).keys())
+    for layer in audit_layers:
         audit_meta = manifest.get("geometryAudits", {}).get(layer)
         if not audit_meta:
             failures.append({"layer": layer, "reason": "missing_geometry_audit_metadata"})
@@ -171,11 +175,23 @@ def validate_release(release_dir: Path) -> dict[str, Any]:
 
     manifest_path = release_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    missing = [layer for layer in REQUIRED_LAYERS if layer not in manifest.get("layers", {})]
+    layer_keys = manifest.get("layers", {})
+    dynamic_polygon_layers = sorted(
+        key for key in layer_keys
+        if re.fullmatch(r"adm[1-5]", key)
+    )
+    required_layers = list(BASE_REQUIRED_LAYERS)
+    for polygon_key in dynamic_polygon_layers:
+        label_key = f"{polygon_key}Labels"
+        if polygon_key not in required_layers:
+            required_layers.append(polygon_key)
+        if label_key in layer_keys and label_key not in required_layers:
+            required_layers.append(label_key)
+    missing = [layer for layer in required_layers if layer not in layer_keys]
     if missing:
         raise SystemExit(f"Generated release is missing required layers: {missing}")
     total_tiles = 0
-    for key in REQUIRED_LAYERS:
+    for key in required_layers:
         metadata = manifest["layers"][key]
         if metadata["featureCount"] <= 0 or metadata["tileCount"] <= 0:
             raise SystemExit(f"Generated layer is empty: {key}")
@@ -258,6 +274,34 @@ def main() -> None:
             download(url, source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson")
         print("[AtlasWorld] phase=download-complete adm1+adm2", flush=True)
 
+        deep_spec = source_dir / "deep-layer-spec.json"
+        deep_download_dir = source_dir / ".deep-downloads"
+        print(f"[AtlasWorld] phase=deep-source-prepare-start spec={deep_spec}", flush=True)
+        run([
+            sys.executable,
+            str(repo / "scripts" / "prepare_global_geoboundaries_deep.py"),
+            "--raw-dir", str(source_dir),
+            "--download-dir", str(deep_download_dir),
+            "--spec-output", str(deep_spec),
+            "--workers", str(max(2, min(8, (os.cpu_count() or 1) * 2))),
+        ], cwd=repo)
+        print(f"[AtlasWorld] phase=deep-source-prepare-complete spec={deep_spec}", flush=True)
+
+        places_zip = source_dir / ".geonames-cities500.zip"
+        places_source = source_dir / "global-geonames-cities500.geojson"
+        places_metadata = source_dir / "global-geonames-cities500.json"
+        print(f"[AtlasWorld] phase=places-download-start url={GEONAMES_CITIES_URL}", flush=True)
+        download(GEONAMES_CITIES_URL, places_zip)
+        print(f"[AtlasWorld] phase=places-prepare-start output={places_source}", flush=True)
+        run([
+            sys.executable,
+            str(repo / "scripts" / "prepare_global_geonames_places.py"),
+            "--zip", str(places_zip),
+            "--output", str(places_source),
+            "--metadata", str(places_metadata),
+        ], cwd=repo)
+        print(f"[AtlasWorld] phase=places-prepare-complete output={places_source}", flush=True)
+
         print(f"[AtlasWorld] phase=builder-start release={args.release_id}", flush=True)
         run([
             sys.executable,
@@ -266,6 +310,12 @@ def main() -> None:
             str(source_dir),
             "--release-id",
             args.release_id,
+            "--layer-spec",
+            str(deep_spec),
+            "--places-source",
+            str(places_source),
+            "--places-metadata",
+            str(places_metadata),
             "--workers",
             str(max(1, min(4, args.workers or (os.cpu_count() or 1)))),
             "--parallel-layers",
@@ -283,11 +333,13 @@ def main() -> None:
             "releaseId": manifest["releaseId"],
             "coordinateSystem": manifest["coordinateSystem"],
             "geometryPolicy": manifest["geometryPolicy"],
-            "layers": {layer: {
+                        "layers": {layer: {
                 "featureCount": manifest["layers"][layer]["featureCount"],
                 "tileCount": manifest["layers"][layer]["tileCount"],
                 "tileBytes": manifest["layers"][layer]["tileBytes"],
-            } for layer in REQUIRED_LAYERS},
+            } for layer in required_layers},
+
+
         }, indent=2), flush=True)
 
         archive = args.archive or (Path("/kaggle/working") / f"atlas-world-{args.release_id}.tar.gz")

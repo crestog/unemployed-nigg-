@@ -11,6 +11,18 @@ export type GlobalMvtLayer = {
   sourceFile: string;
   sourceSha256: string;
   sourceUrl: string;
+  sourceMetadata?: Array<{
+    countryCode?: string;
+    countryName?: string;
+    boundaryType?: string;
+    boundaryYearRepresented?: string;
+    sourceUrl?: string;
+    sourceLicense?: string;
+    licenseSource?: string;
+    sourceHash?: string;
+    sourceBytes?: number;
+    featureCount?: number;
+  }>;
 };
 
 export type GlobalMvtManifest = {
@@ -29,6 +41,12 @@ export type GlobalMvtManifest = {
   coveragePolicy: {
     adm1: string;
     adm2: string;
+    deepLevels?: Record<string, {
+      tileZoom: number;
+      sourceFile: string;
+      sourceMetadataRecords: number;
+      requestedFeatureCount?: number | null;
+    }>;
     disputedAreas: string;
     syntheticFeatures: number;
   };
@@ -51,21 +69,27 @@ export type GlobalMvtManifest = {
     adm1Labels: GlobalMvtLayer;
     adm2: GlobalMvtLayer;
     adm2Labels: GlobalMvtLayer;
+    [key: string]: GlobalMvtLayer;
   };
 };
 
-export type GlobalMvtLayerKey = keyof GlobalMvtManifest["layers"];
+export type GlobalMvtLayerKey = string;
 
-const globalMvtDirectoryByKey: Record<GlobalMvtLayerKey, string> = {
+const globalMvtDirectoryByKey: Record<string, string> = {
   adm1: "adm1",
   adm1Labels: "adm1-labels",
   adm2: "adm2",
   adm2Labels: "adm2-labels",
 };
 
+export const globalMvtDirectoryForKey = (layer: GlobalMvtLayerKey) =>
+  globalMvtDirectoryByKey[layer] ?? (layer.endsWith("Labels")
+    ? `${layer.slice(0, -"Labels".length)}-labels`
+    : layer);
+
 export const globalMvtTileUrl = (
   manifest: GlobalMvtManifest,
   layer: GlobalMvtLayerKey
 ) => manifest.tileTemplate
   .replace("{releaseId}", manifest.releaseId)
-  .replace("{layer}", globalMvtDirectoryByKey[layer]);
+  .replace("{layer}", globalMvtDirectoryForKey(layer));

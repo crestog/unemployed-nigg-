@@ -49,7 +49,11 @@ DEFAULT_RELEASE = "world-global-geoboundaries-kaggle"
 SOURCE_URLS = {
     "adm1": "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM1.geojson",
     "adm2": "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM2.geojson",
+    "adm3": "https://www.geoboundaries.org/api/current/gbOpen/ALL/ADM3/",
+    "adm4": "https://www.geoboundaries.org/api/current/gbOpen/ALL/ADM4/",
+    "adm5": "https://www.geoboundaries.org/api/current/gbOpen/ALL/ADM5/",
 }
+DEFAULT_LAYER_ZOOMS = {"adm1": 5, "adm2": 7, "adm3": 9, "adm4": 11, "adm5": 13}
 
 # MapLibre globe still consumes ordinary Web Mercator vector tile geometry.
 # Features above this latitude are not emitted for the global ADM detail layers;
@@ -212,7 +216,7 @@ def repair_geometry(geometry: Any) -> tuple[Any, str]:
 def clean_properties(properties: dict[str, Any], layer: str, fallback_id: int) -> tuple[str, dict[str, Any]]:
     shape_id = properties.get("shapeID") or properties.get("shapeId") or f"{layer}-{fallback_id}"
     name = properties.get("shapeName") or properties.get("shape_name") or properties.get("name") or "Unnamed administrative unit"
-    country = properties.get("shapeGroup") or properties.get("shapeISO") or properties.get("shapeGroupISO") or None
+    country = properties.get("countryCode") or properties.get("shapeGroup") or properties.get("shapeISO") or properties.get("shapeGroupISO") or None
     output: dict[str, Any] = {
         "atlasId": str(shape_id),
         "name": str(name),
@@ -222,7 +226,7 @@ def clean_properties(properties: dict[str, Any], layer: str, fallback_id: int) -
     }
     if country:
         output["countryCode"] = str(country)
-    for key in ("shapeType", "shapeISO", "shapeGroup", "boundaryID", "boundaryYearRepresented"):
+    for key in ("shapeType", "shapeISO", "shapeGroup", "boundaryID", "boundaryYearRepresented", "sourceBoundaryId", "adminLevel"):
         value = properties.get(key)
         if value not in (None, ""):
             output[key] = value
@@ -626,7 +630,106 @@ def write_audit(output_root: Path, audit_rows: list[dict[str, Any]], layer: str)
     }
 
 
-def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path, workers: int | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def build_points_layer(
+    source_path: Path,
+    output_root: Path,
+    zoom: int,
+    source_url: str,
+    source_sha256: str,
+    source_metadata: dict[str, Any],
+    workers: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    layer = "places"
+    started = time.monotonic()
+    records: list[dict[str, Any]] = []
+    audit_rows: list[dict[str, Any]] = []
+    progress_line(layer, "point-read-start", started, source=source_path.name, sourceBytes=source_path.stat().st_size, zoom=zoom)
+    with source_path.open("rb") as handle:
+        for fallback_id, feature in enumerate(ijson.items(handle, "features.item"), start=1):
+            properties = feature.get("properties") or {}
+            audit: dict[str, Any] = {
+                "layer": layer,
+                "sourceId": str(properties.get("shapeID") or properties.get("geonameId") or fallback_id),
+                "name": str(properties.get("shapeName") or properties.get("name") or "Unnamed place"),
+                "countryCode": properties.get("countryCode"),
+                "accepted": False,
+                "inputBbox": None,
+                "normalizedBbox": None,
+                "maxLongitudeJump": 0,
+                "antimeridianSplitCount": 0,
+                "postSplitMaxComponentLongitudeSpan": 0,
+                "polarStatus": "not_checked",
+                "repairStatus": "not_run",
+                "tileReplicationCount": 0,
+                "rejectedReason": None,
+            }
+            try:
+                geometry = shape(feature.get("geometry") or {})
+                if not isinstance(geometry, Point) or geometry.is_empty:
+                    raise GeometryRejected("not_a_point")
+                longitude, latitude = float(geometry.x), float(geometry.y)
+                if not all(math.isfinite(value) for value in (longitude, latitude)):
+                    raise GeometryRejected("empty_or_nonfinite_geometry")
+                longitude = normalize_longitude(longitude)
+                if abs(latitude) > SAFE_VECTOR_LATITUDE + EPSILON:
+                    audit["polarStatus"] = "rejected_outside_safe_vector_latitude"
+                    raise GeometryRejected("outside_safe_vector_latitude")
+                geometry = Point(longitude, latitude)
+                projected = project_geometry(geometry)
+                source_id = str(properties.get("shapeID") or properties.get("geonameId") or f"places-{fallback_id}")
+                output_properties = {
+                    "atlasId": source_id,
+                    "name": str(properties.get("shapeName") or properties.get("name") or "Unnamed place"),
+                    "label": True,
+                    "selected": False,
+                    "sourceLayer": layer,
+                    "countryCode": str(properties.get("countryCode") or ""),
+                    "featureClass": str(properties.get("featureClass") or "P"),
+                    "featureCode": str(properties.get("featureCode") or ""),
+                    "population": int(properties.get("population") or 0),
+                    "admin1Code": str(properties.get("admin1Code") or ""),
+                    "admin2Code": str(properties.get("admin2Code") or ""),
+                }
+                records.append({
+                    "id": source_id,
+                    "properties": output_properties,
+                    "geometry": projected,
+                    "labelGeometry": projected,
+                })
+                audit["accepted"] = True
+                audit["polarStatus"] = "within_safe_vector_latitude"
+                audit["repairStatus"] = "point"
+                audit["tileReplicationCount"] = 1
+            except GeometryRejected as exc:
+                audit["rejectedReason"] = exc.reason
+            except Exception as exc:
+                audit["rejectedReason"] = f"geometry_error:{type(exc).__name__}"
+            audit_rows.append(audit)
+            if fallback_id % PROGRESS_FEATURE_INTERVAL == 0:
+                progress_line(layer, "point-read", started, sourceFeatures=fallback_id, accepted=len(records), rejected=fallback_id - len(records))
+    audit_metadata = write_audit(output_root, audit_rows, layer)
+    point_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=True, workers=workers)
+    point_metadata.update({
+        "sourceFile": str(source_path.relative_to(ROOT)),
+        "sourceSha256": source_sha256,
+        "sourceUrl": source_url,
+        "sourceMetadata": [source_metadata],
+        "audit": audit_metadata,
+    })
+    point_metadata["invalidOrEmptyFeatures"] = audit_metadata["rejectedFeatureCount"]
+    progress_line(layer, "complete", started, accepted=len(records), rejected=audit_metadata["rejectedFeatureCount"], pointTiles=point_metadata["tileCount"], pointBytes=point_metadata["tileBytes"])
+    return point_metadata, audit_metadata
+
+
+def build_layer(
+    source_path: Path,
+    layer: str,
+    zoom: int,
+    output_root: Path,
+    workers: int | None = None,
+    source_url: str | None = None,
+    source_metadata: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     started = time.monotonic()
     progress_line(layer, "start", started, source=source_path.name, sourceBytes=source_path.stat().st_size, zoom=zoom)
     records, audit_rows = read_records(source_path, layer, zoom, output_root)
@@ -637,7 +740,8 @@ def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path, wor
     source_metadata = {
         "sourceFile": str(source_path.relative_to(ROOT)),
         "sourceSha256": sha256_file(source_path),
-        "sourceUrl": SOURCE_URLS[layer],
+        "sourceUrl": source_url or SOURCE_URLS.get(layer, SOURCE_URLS["adm2"]),
+        "sourceMetadata": source_metadata or [],
         "audit": audit_metadata,
     }
     polygon_metadata.update(source_metadata)
@@ -648,14 +752,44 @@ def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path, wor
     return polygon_metadata, label_metadata, audit_metadata
 
 
+def load_layer_specs(spec_path: Path, source_dir: Path) -> list[dict[str, Any]]:
+    payload = json.loads(spec_path.read_text(encoding="utf-8"))
+    raw_levels = payload.get("levels")
+    if not isinstance(raw_levels, list):
+        raise SystemExit(f"Layer spec has no levels list: {spec_path}")
+    specs: list[dict[str, Any]] = []
+    for raw in raw_levels:
+        layer = str(raw.get("layer", "")).lower()
+        if layer not in {"adm3", "adm4", "adm5"}:
+            raise SystemExit(f"Unsupported deep layer in spec: {layer}")
+        source_file = Path(str(raw.get("sourceFile", "")))
+        if not source_file.name:
+            raise SystemExit(f"Missing sourceFile for {layer}")
+        if not source_file.is_absolute():
+            source_file = source_dir / source_file
+        specs.append({
+            "layer": layer,
+            "tileZoom": int(raw.get("tileZoom", DEFAULT_LAYER_ZOOMS[layer])),
+            "sourceFile": source_file,
+            "sourceUrl": str(raw.get("sourceUrl") or SOURCE_URLS[layer]),
+            "sourceMetadata": raw.get("sourceRows") if isinstance(raw.get("sourceRows"), list) else [],
+            "featureCount": raw.get("featureCount"),
+        })
+    return specs
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR)
     parser.add_argument("--output-base", type=Path, default=DEFAULT_OUTPUT_BASE)
     parser.add_argument("--release-id", default=DEFAULT_RELEASE)
-    parser.add_argument("--layers", nargs="+", choices=("adm1", "adm2"), default=("adm1", "adm2"))
-    parser.add_argument("--workers", type=int, default=None, help="Tile encoder threads per layer; default is up to four based on Kaggle CPU count")
-    parser.add_argument("--parallel-layers", action="store_true", help="Build ADM1 and ADM2 in separate CPU processes")
+    parser.add_argument("--layers", nargs="+", default=("adm1", "adm2"))
+    parser.add_argument("--layer-spec", type=Path, default=None, help="Kaggle-generated JSON spec for available country-specific ADM3-ADM5 inputs")
+    parser.add_argument("--workers", type=int, default=None, help="Tile encoder threads per layer; default is up to four based on CPU count")
+    parser.add_argument("--parallel-layers", action="store_true", help="Build independent levels in separate CPU processes")
+    parser.add_argument("--places-source", type=Path, default=None, help="Optional GeoNames-derived Point GeoJSON input")
+    parser.add_argument("--places-metadata", type=Path, default=None, help="Metadata JSON for the optional GeoNames-derived Point GeoJSON input")
+    parser.add_argument("--places-zoom", type=int, default=8, help="Tile zoom for the optional global place points")
     args = parser.parse_args()
     source_dir = args.source_dir if args.source_dir.is_absolute() else ROOT / args.source_dir
     output_base = args.output_base if args.output_base.is_absolute() else ROOT / args.output_base
@@ -664,40 +798,108 @@ def main() -> None:
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     workers = max(1, min(4, args.workers or (os.cpu_count() or 1)))
-    print(f"[AtlasWorld] build-start release={args.release_id} output={output_root} layers={','.join(args.layers)} workers={workers} cpuCount={os.cpu_count() or 1} parallelLayers={args.parallel_layers}", flush=True)
-    configs = {"adm1": 5, "adm2": 7}
+
+    base_layers = []
+    for layer in args.layers:
+        layer = str(layer).lower()
+        if layer not in DEFAULT_LAYER_ZOOMS or layer in {"adm3", "adm4", "adm5"}:
+            raise SystemExit(f"Base --layers accepts adm1/adm2 only; use --layer-spec for deep levels: {layer}")
+        source_path = source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson"
+        base_layers.append({
+            "layer": layer,
+            "tileZoom": DEFAULT_LAYER_ZOOMS[layer],
+            "sourceFile": source_path,
+            "sourceUrl": SOURCE_URLS[layer],
+            "sourceMetadata": [],
+        })
+    deep_layers = load_layer_specs(args.layer_spec, source_dir) if args.layer_spec else []
+    layer_specs = base_layers + deep_layers
+    if not layer_specs:
+        raise SystemExit("No layers configured")
+    layers_config = {item["layer"]: item for item in layer_specs}
+    layer_names = [item["layer"] for item in layer_specs]
+    print(f"[AtlasWorld] build-start release={args.release_id} output={output_root} layers={','.join(layer_names)} workers={workers} cpuCount={os.cpu_count() or 1} parallelLayers={args.parallel_layers}", flush=True)
     layers: dict[str, Any] = {}
     audits: dict[str, Any] = {}
     build_results: dict[str, tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = {}
-    layer_processes = min(len(args.layers), workers) if args.parallel_layers else 1
+    layer_processes = min(len(layer_specs), workers) if args.parallel_layers else 1
     layer_workers = max(1, workers // layer_processes) if args.parallel_layers else workers
-    if args.parallel_layers and len(args.layers) > 1:
-        print(f"[AtlasWorld] phase=parallel-layer-start layers={','.join(args.layers)} processes={layer_processes} workersPerLayer={layer_workers}", flush=True)
+    if args.parallel_layers and len(layer_specs) > 1:
+        print(f"[AtlasWorld] phase=parallel-layer-start layers={','.join(layer_names)} processes={layer_processes} workersPerLayer={layer_workers}", flush=True)
         with ProcessPoolExecutor(max_workers=layer_processes) as executor:
             futures = {}
-            for layer in args.layers:
-                source_path = source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson"
+            for item in layer_specs:
+                source_path = item["sourceFile"]
                 if not source_path.exists():
                     raise SystemExit(f"Missing source snapshot: {source_path}")
-                print(f"[AtlasWorld] layer-queued layer={layer} source={source_path.name} bytes={source_path.stat().st_size}", flush=True)
-                futures[executor.submit(build_layer, source_path, layer, configs[layer], output_root, layer_workers)] = layer
+                print(f"[AtlasWorld] layer-queued layer={item['layer']} source={source_path.name} bytes={source_path.stat().st_size}", flush=True)
+                futures[executor.submit(
+                    build_layer,
+                    source_path,
+                    item["layer"],
+                    item["tileZoom"],
+                    output_root,
+                    layer_workers,
+                    item["sourceUrl"],
+                    item["sourceMetadata"],
+                )] = item["layer"]
             for future in as_completed(futures):
                 layer = futures[future]
                 build_results[layer] = future.result()
                 print(f"[AtlasWorld] layer-process-complete layer={layer}", flush=True)
     else:
-        for layer in args.layers:
-            source_path = source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson"
-            print(f"[AtlasWorld] layer-start layer={layer} source={source_path.name} bytes={source_path.stat().st_size}", flush=True)
+        for item in layer_specs:
+            source_path = item["sourceFile"]
+            print(f"[AtlasWorld] layer-start layer={item['layer']} source={source_path.name} bytes={source_path.stat().st_size}", flush=True)
             if not source_path.exists():
                 raise SystemExit(f"Missing source snapshot: {source_path}")
-            build_results[layer] = build_layer(source_path, layer, configs[layer], output_root, workers=workers)
-    for layer in args.layers:
+            build_results[item["layer"]] = build_layer(
+                source_path,
+                item["layer"],
+                item["tileZoom"],
+                output_root,
+                workers=workers,
+                source_url=item["sourceUrl"],
+                source_metadata=item["sourceMetadata"],
+            )
+    for item in layer_specs:
+        layer = item["layer"]
         polygon, labels, audit = build_results[layer]
         layers[layer] = polygon
         layers[f"{layer}Labels"] = labels
         audits[layer] = audit
+
+    if args.places_source:
+        places_source = args.places_source if args.places_source.is_absolute() else ROOT / args.places_source
+        places_metadata_path = args.places_metadata if args.places_metadata and args.places_metadata.is_absolute() else (ROOT / args.places_metadata if args.places_metadata else None)
+        if not places_source.exists():
+            raise SystemExit(f"Missing places source: {places_source}")
+        if not places_metadata_path or not places_metadata_path.exists():
+            raise SystemExit("--places-metadata is required when --places-source is provided")
+        places_metadata = json.loads(places_metadata_path.read_text(encoding="utf-8"))
+        print(f"[AtlasWorld] layer-start layer=places source={places_source.name} bytes={places_source.stat().st_size}", flush=True)
+        place_layer, place_audit = build_points_layer(
+            places_source,
+            output_root,
+            args.places_zoom,
+            str(places_metadata.get("sourceUrl") or "https://download.geonames.org/export/dump/cities500.zip"),
+            str(places_metadata.get("sourceSha256") or sha256_file(places_source)),
+            places_metadata,
+            workers=workers,
+        )
+        layers["placesLabels"] = place_layer
+        audits["places"] = place_audit
+        print(f"[AtlasWorld] layer-process-complete layer=places", flush=True)
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    deep_summary = {
+        item["layer"]: {
+            "tileZoom": item["tileZoom"],
+            "sourceFile": item["sourceFile"].name,
+            "sourceMetadataRecords": len(item["sourceMetadata"]),
+            "requestedFeatureCount": item.get("featureCount"),
+        }
+        for item in deep_layers
+    }
     manifest = {
         "format": "atlas-global-geoboundaries-mvt-v1",
         "releaseId": args.release_id,
@@ -707,21 +909,23 @@ def main() -> None:
         "geometryPolicy": {
             "antimeridian": "Normalize longitudes and split polygon rings at the 180th meridian before projection.",
             "safeVectorLatitude": SAFE_VECTOR_LATITUDE,
-            "polarDetail": "Global ADM1/ADM2 features touching latitudes outside the safe vector latitude are rejected and listed in the geometry audit; the local country overview remains the fallback there.",
+            "polarDetail": "Features touching latitudes outside the safe vector latitude are rejected and listed in the geometry audit; the local country overview remains the fallback there.",
             "tileBufferPixels": MVT_BUFFER_PIXELS,
             "worldSpanningFeatures": "Rejected after component splitting rather than emitted as a world-spanning fill.",
         },
         "coveragePolicy": {
             "adm1": "Global composite administrative level 1 from geoBoundaries CGAZ; displayed as reference geometry.",
             "adm2": "Global composite administrative level 2 from geoBoundaries CGAZ; displayed as reference geometry.",
-            "disputedAreas": "CGAZ global composite policy follows the source project's US Department of State definitions; Atlas does not infer sovereignty.",
+            "deepLevels": deep_summary,
+            "places": "GeoNames cities500 populated-place reference points; source is CC BY and is not a complete locality census.",
+            "disputedAreas": "CGAZ global composite policy follows the source project; Atlas does not infer sovereignty.",
             "syntheticFeatures": 0,
         },
         "source": {
             "publisher": "geoBoundaries / William & Mary geoLab",
-            "dataset": "Comprehensive Global Administrative Zones (CGAZ)",
-            "license": "Attribution required; see source terms",
-            "sourceUrl": "https://www.geoboundaries.org/globalDownloads.html",
+            "dataset": "CGAZ plus country-specific gbOpen administrative levels where available",
+            "license": "Per-source attribution and license metadata are preserved per layer",
+            "sourceUrl": "https://www.geoboundaries.org/api.html",
         },
         "geometryAudits": audits,
         "layers": layers,
@@ -735,10 +939,7 @@ def main() -> None:
         "releaseId": args.release_id,
         "safeVectorLatitude": SAFE_VECTOR_LATITUDE,
         "layers": {
-            key: {
-                field: value[field]
-                for field in ("tileZoom", "featureCount", "invalidOrEmptyFeatures", "tileCount", "tileBytes")
-            }
+            key: {field: value[field] for field in ("tileZoom", "featureCount", "invalidOrEmptyFeatures", "tileCount", "tileBytes")}
             for key, value in layers.items()
         },
         "audits": audits,

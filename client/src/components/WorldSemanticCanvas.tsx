@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 export type SemanticBoundary = {
   id: string;
@@ -29,6 +29,7 @@ type WorldSemanticCanvasProps = {
   adm1: SemanticBoundary[];
   adm2: SemanticBoundary[];
   localities: SemanticLocality[];
+  canvasRef?: RefObject<HTMLCanvasElement | null>;
 };
 
 const drawBoundary = (
@@ -66,12 +67,13 @@ export default function WorldSemanticCanvas({
   adm1,
   adm2,
   localities,
+  canvasRef: forwardedCanvasRef,
 }: WorldSemanticCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const localCanvasRef = useRef<HTMLCanvasElement>(null);
   const pathCacheRef = useRef(new Map<string, { d: string; path: Path2D }>());
 
   useEffect(() => {
-    const canvas = canvasRef.current;
+    const canvas = forwardedCanvasRef?.current ?? localCanvasRef.current;
     if (!canvas) return;
     const pixelRatio = Math.min(1.5, Math.max(1, dpr));
     canvas.width = Math.max(1, Math.round(width * pixelRatio));
@@ -177,7 +179,10 @@ export default function WorldSemanticCanvas({
 
   return (
     <canvas
-      ref={canvasRef}
+      ref={node => {
+        localCanvasRef.current = node;
+        if (forwardedCanvasRef) forwardedCanvasRef.current = node;
+      }}
       className="pointer-events-none absolute inset-0 h-full w-full will-change-transform"
       aria-hidden="true"
     />

@@ -1833,6 +1833,7 @@ export default function WorldMapExplorer() {
         </g>
       </svg>
       <WorldSemanticCanvas
+        canvasRef={semanticCanvasRef}
         width={size.width}
         height={size.height}
         dpr={worldDevicePixelRatio}

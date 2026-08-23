@@ -5,6 +5,9 @@ export type GlobalMvtLayer = {
   tileCount: number;
   tileBytes: number;
   tiles: string[];
+  layerDirectory?: string;
+  mvtSourceLayer?: string;
+  labelOnly?: boolean;
   sourceFile: string;
   sourceSha256: string;
   sourceUrl: string;
@@ -16,12 +19,27 @@ export type GlobalMvtManifest = {
   generatedAt: string;
   coordinateSystem: string;
   tileTemplate: string;
+  geometryPolicy?: {
+    antimeridian: string;
+    safeVectorLatitude: number;
+    polarDetail: string;
+    tileBufferPixels: number;
+    worldSpanningFeatures: string;
+  };
   coveragePolicy: {
     adm1: string;
     adm2: string;
     disputedAreas: string;
     syntheticFeatures: number;
   };
+  geometryAudits?: Record<string, {
+    json: string;
+    csv: string;
+    sourceFeatureCount: number;
+    acceptedFeatureCount: number;
+    rejectedFeatureCount: number;
+    rejectedReasons: Record<string, number>;
+  }>;
   source: {
     publisher: string;
     dataset: string;

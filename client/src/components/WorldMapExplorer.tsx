@@ -33,7 +33,6 @@ import {
   ZoomOut,
 } from "lucide-react";
 
-type Camera = { x: number; y: number; k: number };
 type MapViewState = {
   center: [number, number];
   zoom: number;
@@ -200,7 +199,15 @@ const mapCollection = feature(
   (worldTopology as unknown as { objects: { countries: never } }).objects
     .countries
 ) as unknown as GeoJSON.FeatureCollection<GeoJSON.Geometry, { name?: string }>;
-const countryFeatures = mapCollection.features as MapFeature[];
+const countryFeatures = (mapCollection.features as MapFeature[]).filter(country => {
+  const id = String(country.id ?? "").padStart(3, "0");
+  const name = String(country.properties?.name ?? "").toLowerCase();
+  // MapLibre globe renders ordinary Web Mercator vector geometry; the
+  // Antarctica polygon is a polar cap, not a valid low-zoom country fill for
+  // this source contract. Global ADM detail has the same explicit policy in
+  // the Kaggle builder. Do not let it create a second polar artifact.
+  return id !== "010" && name !== "antarctica";
+});
 const safeCountryLabelAnchor = (country: MapFeature): [number, number] | null => {
   try {
     const centroid = geoCentroid(country as GeoJSON.Feature);
@@ -221,11 +228,6 @@ const safeCountryLabelAnchor = (country: MapFeature): [number, number] | null =>
     return null;
   }
 };
-// Keep the interaction effectively unbounded while remaining inside CSS/IEEE-754
-// safety. The reference map reaches five-figure zoom values; this leaves room
-// for many more gestures without allowing non-finite transforms.
-const MIN_ZOOM = 0.02;
-const MAX_ZOOM = 1e7;
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 const topologyId = (item: MapFeature) => String(item.id ?? "").padStart(3, "0");
@@ -344,7 +346,6 @@ function geographicPointInBounds(
 export default function WorldMapExplorer() {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const restoredRef = useRef(false);
-  const cameraRef = useRef<Camera>({ x: 640, y: 380, k: 1 });
   const mapSceneRef = useRef<MapLibreWorldSceneHandle>(null);
   const mapViewRef = useRef<MapViewState | null>(null);
   const selectionCameraRef = useRef<MapViewState | null>(null);
@@ -376,7 +377,6 @@ export default function WorldMapExplorer() {
   const [geoSelection, setGeoSelection] = useState<GeoSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 1280, height: 760 });
-  const [camera, setCamera] = useState<Camera>({ x: 640, y: 380, k: 1 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mapView, setMapView] = useState<{
     center: [number, number];
@@ -517,27 +517,20 @@ export default function WorldMapExplorer() {
     };
   }, []);
 
-  const mapViewCommitRef = useRef<number | null>(null);
+  const mapViewFrameRef = useRef<number | null>(null);
   const mapViewPendingRef = useRef<typeof mapView>(null);
-  const cameraFromMapView = (next: NonNullable<typeof mapView>): Camera => ({
-    x: size.width / 2,
-    y: size.height / 2,
-    k: clamp(2 ** (next.zoom - 1.25), MIN_ZOOM, MAX_ZOOM),
-  });
   const onMapViewChange = (next: NonNullable<typeof mapView>) => {
-    cameraRef.current = cameraFromMapView(next);
+    // MapLibre is the sole camera model. Keep the ref hot for viewport-driven
+    // fetches and selection restore; React state is throttled below for UI.
     mapViewRef.current = next;
     mapViewPendingRef.current = next;
-    if (mapViewCommitRef.current !== null)
-      window.clearTimeout(mapViewCommitRef.current);
-    mapViewCommitRef.current = window.setTimeout(() => {
-      mapViewCommitRef.current = null;
+    if (mapViewFrameRef.current !== null)
+      window.cancelAnimationFrame(mapViewFrameRef.current);
+    mapViewFrameRef.current = window.requestAnimationFrame(() => {
+      mapViewFrameRef.current = null;
       const pending = mapViewPendingRef.current;
-      if (pending) {
-        setMapView(pending);
-        setCamera(cameraFromMapView(pending));
-      }
-    }, 120);
+      if (pending) setMapView(pending);
+    });
   };
   const rememberSelectionCamera = () => {
     if (!selectionCameraRef.current && mapViewRef.current)
@@ -553,8 +546,8 @@ export default function WorldMapExplorer() {
   };
   useEffect(
     () => () => {
-      if (mapViewCommitRef.current !== null)
-        window.clearTimeout(mapViewCommitRef.current);
+      if (mapViewFrameRef.current !== null)
+        window.cancelAnimationFrame(mapViewFrameRef.current);
     },
     []
   );
@@ -779,7 +772,6 @@ export default function WorldMapExplorer() {
       });
     });
   }, [
-    camera,
     indiaInView,
     mapZoom,
     indiaNode,
@@ -816,8 +808,8 @@ export default function WorldMapExplorer() {
   const countryLabelIds = useMemo(() => {
     const labels = new Set<string>();
     const indiaDetailPending =
-      indiaInView && camera.k >= 1.45 && indiaAdm1Features.length === 0;
-    if (camera.k > 2.45 && !indiaDetailPending) return labels;
+      indiaInView && mapZoom >= INDIA_ADM1_ZOOM && indiaAdm1Features.length === 0;
+    if (mapZoom > 3.55 && !indiaDetailPending) return labels;
     [...nodes]
       .sort((a, b) => {
         if (a.id === selectedId) return -1;
@@ -826,7 +818,7 @@ export default function WorldMapExplorer() {
       })
       .forEach(node => labels.add(node.id));
     return labels;
-  }, [camera.k, indiaAdm1Features.length, indiaInView, nodes, selectedId]);
+  }, [indiaAdm1Features.length, indiaInView, mapZoom, nodes, selectedId]);
   const indiaAdm1Render = useMemo(
     () =>
       indiaAdm1Features.flatMap(boundary => {
@@ -861,17 +853,17 @@ export default function WorldMapExplorer() {
   );
   const indiaAdm1LabelIds = useMemo(() => {
     const labels = new Set<string>();
-    if (camera.k < 1.95 || camera.k > 7.8) return labels;
+    if (mapZoom < 3.25 || mapZoom > 7.6) return labels;
     indiaAdm1Render.forEach(item => labels.add(item.boundary.id));
     return labels;
-  }, [camera.k, indiaAdm1Render]);
+  }, [indiaAdm1Render, mapZoom]);
   const visibleIndiaAdm2 = useMemo(() => {
-    if (camera.k < 4.9) return [];
+    if (mapZoom < 5.15) return [];
     const candidates = indiaAdm2Render.filter(item => {
       const [longitude, latitude] = geoCentroid(boundaryToFeature(item.boundary));
       return geographicPointInBounds(longitude, latitude, viewportGeoBounds);
     });
-    const budget = camera.k < 7.5 ? 260 : camera.k < 11 ? 620 : 1100;
+    const budget = mapZoom < 7.5 ? 260 : mapZoom < 11 ? 620 : 1100;
     return candidates
       .sort(
         (a, b) =>
@@ -879,32 +871,32 @@ export default function WorldMapExplorer() {
           (b.boundary.id === geoSelection?.id ? -1 : 0)
       )
       .slice(0, budget);
-  }, [camera.k, geoSelection?.id, indiaAdm2Render, viewportGeoBounds]);
+  }, [geoSelection?.id, indiaAdm2Render, mapZoom, viewportGeoBounds]);
   const indiaAdm2LabelIds = useMemo(() => {
     const labels = new Set<string>();
-    if (camera.k < 6.4) return labels;
-    const budget = camera.k < 9.5 ? 54 : 150;
+    if (mapZoom < 6.1 || mapZoom > 12) return labels;
+    const budget = mapZoom < 9.5 ? 54 : 150;
     visibleIndiaAdm2.slice(0, budget).forEach(item => labels.add(item.boundary.id));
     return labels;
-  }, [camera.k, visibleIndiaAdm2]);
+  }, [mapZoom, visibleIndiaAdm2]);
   const visibleIndiaLocalities = useMemo(() => {
-    if (camera.k < 8.9) return [];
+    if (mapZoom < 8.2) return [];
     const candidates = indiaLocalityPoints.filter(item =>
       geographicPointInBounds(item.record.longitude, item.record.latitude, viewportGeoBounds)
     );
-    const budget = camera.k < 12 ? 420 : camera.k < 20 ? 900 : 1500;
+    const budget = mapZoom < 12 ? 420 : mapZoom < 20 ? 900 : 1500;
     return candidates
       .sort((a, b) => b.record.population - a.record.population)
       .slice(0, budget);
-  }, [camera.k, indiaLocalityPoints, viewportGeoBounds]);
+  }, [indiaLocalityPoints, mapZoom, viewportGeoBounds]);
   const indiaLocalityLabelIds = useMemo(() => {
     const labels = new Set<string>();
-    if (camera.k < 12) return labels;
+    if (mapZoom < 9 || mapZoom > 22) return labels;
     visibleIndiaLocalities
-      .slice(0, camera.k < 18 ? 90 : 180)
+      .slice(0, mapZoom < 18 ? 90 : 180)
       .forEach(item => labels.add(item.record.id));
     return labels;
-  }, [camera.k, visibleIndiaLocalities]);
+  }, [mapZoom, visibleIndiaLocalities]);
   const geoMatches = useMemo<GeoSearchResult[]>(() => {
     const needle = query.trim().toLowerCase();
     if (!indiaGeography || needle.length < 2) return [];
@@ -969,10 +961,6 @@ export default function WorldMapExplorer() {
     restoredRef.current = true;
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     if (params.get("world") !== "1") return;
-    const legacyK = Number.parseFloat(params.get("wxz") ?? "");
-    if (!initialMapView && Number.isFinite(legacyK)) {
-      setCamera(current => ({ ...current, k: clamp(legacyK, MIN_ZOOM, MAX_ZOOM) }));
-    }
     setSelectedId(params.get("wxc") || null);
     setNearbyMode(params.get("wxm") === "nearby");
   }, [initialMapView]);
@@ -997,7 +985,7 @@ export default function WorldMapExplorer() {
       );
     }, 180);
     return () => window.clearTimeout(timeout);
-  }, [camera, mapView, nearbyMode, release, selectedId]);
+  }, [mapView, nearbyMode, release, selectedId]);
 
   const zoomAt = (_px: number, _py: number, factor: number, _commit = false) => {
     mapSceneRef.current?.zoomBy(factor);
@@ -1011,17 +999,10 @@ export default function WorldMapExplorer() {
     setShowResults(false);
     mapSceneRef.current?.focusFeature(node.feature as GeoJSON.Feature, zoom);
   };
-  const focusGeoPoint = (
-    point: { x: number; y: number },
-    zoom: number,
-    center?: [number, number]
-  ) => {
-    if (center) {
-      mapSceneRef.current?.focusCenter(center, zoom);
-      return;
-    }
-    const geographicPoint = projection.invert?.([point.x, point.y]);
-    if (geographicPoint) mapSceneRef.current?.focusCenter(geographicPoint, zoom);
+  const focusGeoPoint = (center: [number, number] | undefined, zoom: number) => {
+    // Screen coordinates are retained for search/semantic records only. All
+    // camera movement must receive an explicit geographic center from source data.
+    if (center) mapSceneRef.current?.focusCenter(center, zoom);
   };
   const selectGeoEntity = (
     kind: Exclude<GeoEntityKind, "country">,
@@ -1066,7 +1047,7 @@ export default function WorldMapExplorer() {
               ? [longitude, latitude] as [number, number]
               : undefined;
           })();
-    focusGeoPoint(point, kind === "adm1" ? 4.1 : kind === "adm2" ? 7.2 : 12.5, center);
+    focusGeoPoint(center, kind === "adm1" ? 4.1 : kind === "adm2" ? 7.2 : 12.5);
   };
   const selectGlobalEntity = (
     kind: "adm1" | "adm2",
@@ -1198,7 +1179,6 @@ export default function WorldMapExplorer() {
       indiaAdm2Features.find(item => item.id === geoSelection.parentId)?.name ??
       null)
     : null;
-  const estimatedMapZoom = 1.25 + Math.log2(Math.max(MIN_ZOOM, camera.k));
   const currentGeoLevel = geoSelection
     ? selectionKindLabel(geoSelection)
       : indiaInView && mapZoom >= INDIA_LOCALITY_ZOOM
@@ -1207,9 +1187,9 @@ export default function WorldMapExplorer() {
         ? "District"
         : indiaInView && mapZoom >= INDIA_ADM1_ZOOM
           ? "State / union territory"
-          : estimatedMapZoom >= GLOBAL_ADM2_MAP_ZOOM
+          : mapZoom >= GLOBAL_ADM2_MAP_ZOOM
             ? "Global administrative level 2"
-            : estimatedMapZoom >= GLOBAL_ADM1_MAP_ZOOM
+            : mapZoom >= GLOBAL_ADM1_MAP_ZOOM
               ? "Global administrative level 1"
               : "Country overview";
   const semanticAdm1 = useMemo<SemanticBoundary[]>(() => {
@@ -1223,17 +1203,16 @@ export default function WorldMapExplorer() {
       y: item.y,
       kind: "adm1",
       opacity:
-        camera.k < 2.25
-          ? clamp((camera.k - 1.85) / 0.4, 0, 0.96)
-          : camera.k < 6.8
+        mapZoom < 3.8
+          ? clamp((mapZoom - 3.2) / 0.6, 0, 0.96)
+          : mapZoom < 6.8
             ? 0.96
-            : Math.max(0.18, 1 - (camera.k - 6.8) / 1.4),
+            : Math.max(0.18, 1 - (mapZoom - 6.8) / 1.4),
       selected:
         geoSelection?.kind === "adm1" && geoSelection.id === item.boundary.id,
       label: indiaAdm1LabelIds.has(item.boundary.id),
     }));
   }, [
-    camera.k,
     geoSelection,
     indiaAdm1LabelIds,
     indiaAdm1Render,
@@ -1250,17 +1229,16 @@ export default function WorldMapExplorer() {
       y: item.y,
       kind: "adm2",
       opacity:
-        camera.k < 5.8
-          ? clamp((camera.k - 4.8) / 1, 0, 0.82)
-          : camera.k < 12
+        mapZoom < 6.2
+          ? clamp((mapZoom - 5.15) / 1.05, 0, 0.82)
+          : mapZoom < 12
             ? 0.82
-            : Math.max(0.16, 1 - (camera.k - 12) / 8),
+            : Math.max(0.16, 1 - (mapZoom - 12) / 8),
       selected:
         geoSelection?.kind === "adm2" && geoSelection.id === item.boundary.id,
       label: indiaAdm2LabelIds.has(item.boundary.id),
     }));
   }, [
-    camera.k,
     geoSelection,
     indiaAdm2LabelIds,
     showIndiaAdm2,
@@ -1338,7 +1316,7 @@ export default function WorldMapExplorer() {
   const onMapPick = (pick: { kind: "country" | "adm1" | "adm2" | "locality"; id: string; feature?: { source?: string; sourceLayer?: string; geometry?: GeoJSON.Geometry; properties?: Record<string, unknown> } }) => {
     if (pick.kind === "country") {
       const node = nodeById.get(pick.id);
-      if (node) focusNode(node, Math.max(2.2, cameraRef.current.k));
+      if (node) focusNode(node);
       return;
     }
     const sourceName = String(pick.feature?.source ?? "");
@@ -1526,7 +1504,7 @@ export default function WorldMapExplorer() {
                 <span>{globalMvtManifest.layers.adm2.featureCount.toLocaleString()} ADM2</span>
               </div>
               <p className="mt-2 text-[10px] leading-4 text-[#8297ac]">
-                Global localities are not included yet. <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
+                Global localities are not included yet. {globalMvtManifest.geometryPolicy?.safeVectorLatitude != null ? `Global ADM detail above ${globalMvtManifest.geometryPolicy.safeVectorLatitude}° latitude is omitted by the Web Mercator policy.` : "Polar detail policy is not present in this older release."} <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
               </p>
             </>
           ) : (

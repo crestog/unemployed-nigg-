@@ -1,30 +1,45 @@
 # Kaggle build for Atlas World
 
-The heavy geographic preprocessing is an **offline build step**, not a browser or Worker runtime step. Kaggle can run it with Internet enabled and no API key. The browser only consumes the generated static MVT files.
+Atlas World treats geographic preprocessing as an **offline Kaggle job**. The browser and Cloudflare Worker do not download GeoBoundaries, run Python, or call Kaggle at runtime; they serve the validated, versioned static MVT release committed to `client/public/data/world-mvt/`.
 
 ## What the pipeline builds
 
-The repository builder downloads official GeoBoundaries CGAZ ADM1 and ADM2 snapshots, projects geometries to spherical Web Mercator, clips and encodes polygon tiles, and emits separate point-label tiles. The point-label layers are important: MapLibre’s polygon symbol placement can repeat a label when one polygon is present in multiple vector tiles, so labels are precomputed once per source feature in dedicated point tiles. The result contains global ADM1/ADM2 reference geometry and labels; it does **not** add global cities/localities.
+The job downloads the official GeoBoundaries CGAZ ADM1 and ADM2 snapshots, records their SHA-256 hashes, normalizes longitudes, splits polygon rings at the 180th meridian, repairs valid winding and geometry, rejects global ADM detail outside the documented safe vector latitude, projects accepted geometry to spherical Web Mercator, clips with an 8-pixel tile buffer, and encodes XYZ Mapbox Vector Tiles. Each source feature also gets one representative point in a separate label layer so polygon clipping cannot duplicate labels across tiles.
 
-The source policy remains the GeoBoundaries CGAZ composite policy, including its disputed-area treatment. Keep the generated manifest and `THIRD_PARTY_NOTICES.md` with every release.
+The release contains global **country/ADM1/ADM2 reference geography only**. It does not add worldwide cities or localities. India’s specialized ADM1/ADM2/GeoNames locality pipeline remains a separate source. GeoBoundaries attribution, source URLs, source hashes, and CGAZ disputed-area policy are preserved in the generated manifest and notices already shipped with the project.
 
-## Kaggle steps
+## One-time Kaggle setup
 
-Create a Kaggle Notebook with Internet enabled, then run:
+Create or open the repository notebook at `notebooks/atlas_world_kaggle_auto.ipynb`. In Kaggle, enable **Internet** in the notebook settings. Add one Kaggle Secret named `GITHUB_TOKEN` containing a fine-grained GitHub token scoped only to `crestog/unemployed-nigg-` with repository **Contents: Read and write** permission. Do not paste a GitHub or Kaggle token into a cell or chat. No Kaggle API token is needed for this workflow.
 
-```python
-!git clone https://github.com/crestog/unemployed-nigg- /kaggle/working/atlas-repo
-!python /kaggle/working/atlas-repo/scripts/kaggle_build_atlas_world.py \
-    --repo-dir /kaggle/working/atlas-repo \
-    --release-id world-global-geoboundaries-kaggle
-```
+Run the notebook cells in order. The notebook generates a unique immutable release ID such as `world-global-geoboundaries-kaggle-20260823T123456Z`, so a successful build can be identified and rolled back by commit if needed.
 
-The wrapper installs its Python-only build dependencies, downloads the two official source snapshots, runs `scripts/build_global_geoboundaries_mvt.py`, validates that `adm1`, `adm1Labels`, `adm2`, and `adm2Labels` exist, and writes `/kaggle/working/atlas-world-world-global-geoboundaries-kaggle.tar.gz`. It deletes the raw source snapshots after the archive is written. Use `--skip-install` only when the notebook has already installed `ijson`, `shapely`, `mapbox-vector-tile`, `pyclipper`, and `protobuf`.
+## Cell sequence
 
-## Handoff to the website
+| Cell | Purpose | Expected result |
+| --- | --- | --- |
+| Setup | Reads `GITHUB_TOKEN` from Kaggle Secrets and defines a unique release ID | The token is loaded without printing its value |
+| Clone | Clones the latest `main` branch | The current builder and frontend code are present |
+| Dependencies | Installs `ijson`, `shapely`, `antimeridian`, `mapbox-vector-tile`, `pyclipper`, and `protobuf` | Python build environment is ready |
+| Build | Downloads the two official source snapshots and runs `kaggle_build_atlas_world.py` | Four non-empty layers plus JSON/CSV audits are generated |
+| Audit | Reads `geometry-audit-summary.json` and verifies the archive | Polar rejections are listed; world-spanning and invalid geometry failures stop the run |
+| Push check | Shows the new commit and clean status | The wrapper has pushed the validated assets; no credential is printed |
+| Deploy monitor | Polls GitHub Actions and prints the live URL | Existing GitHub Actions deploys `main` to Cloudflare |
 
-Extract the archive locally, copy its `world-mvt/manifest.json` and versioned release directory into `client/public/data/world-mvt/`, and ensure the mutable manifest points to the new release ID. Run `pnpm check`, `pnpm build`, and `git diff --check`. Commit the generated release and deploy through the normal GitHub/Cloudflare workflow. Do not commit the downloaded raw GeoJSON files; the repository ignores `data/raw/` for this reason.
+The wrapper is intentionally the automated path. It downloads, builds, audits, validates, archives, removes stale immutable global releases, updates the mutable pointer manifest, commits, and pushes. It does not push if the audit or representative PBF validation fails.
 
-## Reproducibility record
+## Geometry audit contract
 
-Record the release ID, source URLs, source SHA-256 values, feature counts, tile counts, tile bytes, build date, and the exact commit that consumed the release. Do not replace the source data with fabricated features or describe the global ADM1/ADM2 release as worldwide locality or city coverage.
+Every source feature receives a JSON and CSV audit row containing source ID, name, country code, input and normalized bounding boxes, maximum longitude jump, antimeridian split count, post-split component span, polar status, repair status, tile replication count, acceptance, and rejection reason. The builder rejects any accepted component wider than 180 degrees, any invalid-after-repair geometry, any excessive tile replication, and any projection outside `SAFE_VECTOR_LATITUDE = 80.0` degrees. Features touching higher latitudes are recorded as `outside_safe_vector_latitude` and excluded from global ADM detail rather than silently clamped.
+
+The MVT encoder quantizes against the exact tile bounds while clipping against an 8-pixel projected buffer. This follows the vector-tile buffering model: neighboring tiles receive enough edge geometry to avoid visible seams, while the tile’s quantization bounds remain stable.
+
+## Handoff and rollback
+
+After the wrapper pushes, the existing GitHub Actions workflow should deploy the new `main` commit to Cloudflare. The generated archive is retained in `/kaggle/working/atlas-world-<release-id>.tar.gz` for inspection. The public runtime pointer is only changed in the same generated commit as a fully validated immutable release.
+
+If production validation fails, do not manually edit the pointer to an incomplete directory. Revert the single generated release commit in GitHub, or restore the previous generated asset commit, and let the normal workflow redeploy. Keep the failed archive and audit report as evidence for the next correction.
+
+## Mobile acceptance test
+
+After Actions succeeds, test the live URL on a phone as one continuous MapLibre globe. Pan, pinch, rotate, and zoom through country scale; then inspect the Middle East/dateline, India/Japan, China/Russia, and the safe polar threshold. Confirm that labels are not duplicated, global and India ownership do not overlap, ADM1 fill fades before ADM2 fill takes over, and no dark rectangular or world-spanning mass appears. The Web Mercator globe limitation at high latitudes remains explicit: the current pipeline rejects unsupported global ADM detail there; it does not claim polar administrative correctness.

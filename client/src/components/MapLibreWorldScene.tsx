@@ -347,7 +347,14 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
     adm2Labels?: GlobalMvtManifest["layers"]["adm2Labels"];
   };
   const hasDedicatedLabelTiles = Boolean(layers.adm1Labels && layers.adm2Labels);
-  const globalNonIndiaFilter = ["!=", ["get", "countryCode"], "IND"] as any;
+  // Global and India are separate ownership domains. A global feature without
+  // an explicit source country is not allowed to render because it cannot be
+  // safely excluded from the specialized India source.
+  const globalNonIndiaFilter = [
+    "all",
+    ["has", "countryCode"],
+    ["!=", ["get", "countryCode"], "IND"],
+  ] as any;
   if (!map.getSource(adm1Source)) {
     map.addSource(adm1Source, {
       type: "vector",
@@ -393,10 +400,13 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       "source-layer": "adm1",
       filter: globalNonIndiaFilter,
       minzoom: 5,
-      maxzoom: 7.4,
+      maxzoom: 7.15,
       paint: {
         "fill-color": "#738b76",
-        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 2.35, 0.04, 3.4, 0.11, 7.4, 0.16],
+        // ADM1 fill fades out before ADM2 fill becomes authoritative. This
+        // prevents two semi-transparent administrative paint stacks at the
+        // same zoom while retaining the ADM1 boundary line for orientation.
+        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.12, 6.7, 0.1, 7.0, 0.03, 7.15, 0],
       },
     }, insertBefore);
     map.addLayer({
@@ -406,32 +416,34 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       "source-layer": "adm1",
       filter: globalNonIndiaFilter,
       minzoom: 5,
-      maxzoom: 7.4,
+      maxzoom: 7.2,
       paint: {
         "line-color": "#b9c79b",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 2.35, 0.25, 7.4, 1.05],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.25, 7.2, 1.05],
         "line-opacity": 0.7,
       },
     }, insertBefore);
-    map.addLayer({
-      id: "atlas-global-adm1-label",
-      type: "symbol",
-      source: hasDedicatedLabelTiles ? adm1LabelSource : adm1Source,
-      "source-layer": hasDedicatedLabelTiles ? "labels" : "adm1",
-      filter: globalNonIndiaFilter,
-      minzoom: 5,
-      maxzoom: 7.5,
-      layout: {
-        "text-field": ["get", "name"],
-        "text-font": ["Open Sans Semibold"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 3.45, 8, 6.2, 12, 7.5, 15],
-        "text-max-width": 7,
-        "text-padding": 2,
-        "text-allow-overlap": false,
-        "text-ignore-placement": false,
-      },
-      paint: { "text-color": "#b6f1e2", "text-halo-color": "#061423", "text-halo-width": 1.1 },
-    }, insertBefore);
+    if (hasDedicatedLabelTiles) {
+      map.addLayer({
+        id: "atlas-global-adm1-label",
+        type: "symbol",
+        source: adm1LabelSource,
+        "source-layer": "labels",
+        filter: globalNonIndiaFilter,
+        minzoom: 5,
+        maxzoom: 7.25,
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Open Sans Semibold"],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 5, 8, 6.2, 12, 7.25, 15],
+          "text-max-width": 7,
+          "text-padding": 2,
+          "text-allow-overlap": false,
+          "text-ignore-placement": false,
+        },
+        paint: { "text-color": "#b6f1e2", "text-halo-color": "#061423", "text-halo-width": 1.1 },
+      }, insertBefore);
+    }
   }
   if (!map.getLayer("atlas-global-adm2-fill")) {
     map.addLayer({
@@ -440,12 +452,13 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       source: adm2Source,
       "source-layer": "adm2",
       filter: globalNonIndiaFilter,
-      minzoom: 7,
+      minzoom: 7.1,
       maxzoom: 12,
-        paint: {
-          "fill-color": "#8a9870",
-        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5.4, 0.025, 7.8, 0.1, 12, 0.15],
+      paint: {
+        "fill-color": "#8a9870",
+        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 7.1, 0.02, 7.8, 0.09, 12, 0.14],
       },
+
     }, insertBefore);
     map.addLayer({
       id: "atlas-global-adm2-line",
@@ -453,33 +466,35 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       source: adm2Source,
       "source-layer": "adm2",
       filter: globalNonIndiaFilter,
-      minzoom: 7,
+      minzoom: 7.1,
       maxzoom: 12,
       paint: {
         "line-color": "#d8c38f",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 5.4, 0.18, 12, 0.8],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 7.1, 0.18, 12, 0.8],
         "line-opacity": 0.62,
       },
     }, insertBefore);
-    map.addLayer({
-      id: "atlas-global-adm2-label",
-      type: "symbol",
-      source: hasDedicatedLabelTiles ? adm2LabelSource : adm2Source,
-      "source-layer": hasDedicatedLabelTiles ? "labels" : "adm2",
-      filter: globalNonIndiaFilter,
-      minzoom: 7.2,
-      maxzoom: 12,
-      layout: {
-        "text-field": ["get", "name"],
-        "text-font": ["Open Sans Semibold"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 7.2, 7, 10, 10, 12, 12],
-        "text-max-width": 6,
-        "text-padding": 2,
-        "text-allow-overlap": false,
-        "text-ignore-placement": false,
-      },
-      paint: { "text-color": "#f4d6a7", "text-halo-color": "#061423", "text-halo-width": 1 },
-    }, insertBefore);
+    if (hasDedicatedLabelTiles) {
+      map.addLayer({
+        id: "atlas-global-adm2-label",
+        type: "symbol",
+        source: adm2LabelSource,
+        "source-layer": "labels",
+        filter: globalNonIndiaFilter,
+        minzoom: 7.25,
+        maxzoom: 12,
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Open Sans Semibold"],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 7.25, 7, 10, 10, 12, 12],
+          "text-max-width": 6,
+          "text-padding": 2,
+          "text-allow-overlap": false,
+          "text-ignore-placement": false,
+        },
+        paint: { "text-color": "#f4d6a7", "text-halo-color": "#061423", "text-halo-width": 1 },
+      }, insertBefore);
+    }
   }
 }
 

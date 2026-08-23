@@ -115,6 +115,34 @@ type IndiaGeography = {
     };
   };
 };
+type IndiaTileLayer = {
+  tileZoom: number;
+  count: number;
+  tileCount: number;
+  tiles: string[];
+  label: string;
+  source: GeographySource;
+  precisionNotice: string;
+};
+type IndiaTileManifest = {
+  format: "atlas-india-spatial-tiles-v1";
+  releaseId: string;
+  generatedAt: string;
+  jurisdiction: { isoAlpha2: string; isoAlpha3: string; label: string };
+  layers: {
+    adm1: IndiaTileLayer;
+    adm2: IndiaTileLayer;
+    localities: IndiaTileLayer;
+  };
+};
+type IndiaTileRecord = {
+  releaseId: string;
+  layer: "adm1" | "adm2" | "localities";
+  z: number;
+  x: number;
+  y: number;
+  records: IndiaBoundary[] | IndiaLocality[];
+};
 type GeographySource = {
   publisher: string;
   sourceUrl: string;
@@ -175,6 +203,37 @@ const INDIA_ID = "356";
 const INDIA_ADM1_ZOOM = 2.4;
 const INDIA_ADM2_ZOOM = 6.2;
 const INDIA_LOCALITY_ZOOM = 10.2;
+const longitudeToTileX = (longitude: number, zoom: number) =>
+  clamp(Math.floor(((longitude + 180) / 360) * 2 ** zoom), 0, 2 ** zoom - 1);
+const latitudeToTileY = (latitude: number, zoom: number) => {
+  const phi = clamp(latitude, -85.05112878, 85.05112878) * Math.PI / 180;
+  const normalized = (1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2;
+  return clamp(Math.floor(normalized * 2 ** zoom), 0, 2 ** zoom - 1);
+};
+const tileKeyParts = (key: string) => {
+  const [z, x, y] = key.split("/").map(Number);
+  return { z, x, y };
+};
+const tileKeysForViewport = (
+  layer: IndiaTileLayer,
+  bounds: [[number, number], [number, number]] | null
+) => {
+  if (!bounds) return [];
+  const [[minLongitude, minLatitude], [maxLongitude, maxLatitude]] = bounds;
+  const minX = longitudeToTileX(minLongitude, layer.tileZoom);
+  const maxX = longitudeToTileX(maxLongitude, layer.tileZoom);
+  const minY = latitudeToTileY(maxLatitude, layer.tileZoom);
+  const maxY = latitudeToTileY(minLatitude, layer.tileZoom);
+  return layer.tiles.filter(key => {
+    const { x, y } = tileKeyParts(key);
+    return x >= minX && x <= maxX && y >= minY && y <= maxY;
+  });
+};
+const mergeUniqueById = <T extends { id: string }>(current: T[], incoming: T[]) => {
+  const byId = new Map(current.map(item => [String(item.id), item]));
+  incoming.forEach(item => byId.set(String(item.id), item));
+  return Array.from(byId.values());
+};
 const geoKindLabel = (kind: GeoEntityKind) =>
   kind === "country"
     ? "Country"
@@ -255,9 +314,16 @@ export default function WorldMapExplorer() {
   const dragRef = useRef<{ pointer: number; x: number; y: number } | null>(
     null
   );
-  const indiaRequestedRef = useRef(false);
+  const indiaManifestRequestedRef = useRef(false);
+  const indiaTileCacheRef = useRef(new Set<string>());
+  const indiaTileWorkerRef = useRef<Worker | null>(null);
+  const indiaTileWorkerRequestRef = useRef(0);
+  const indiaTileWorkerPendingRef = useRef(new Map<number, string>());
   const [release, setRelease] = useState<WorldRelease | null>(null);
-  const [indiaGeography, setIndiaGeography] = useState<IndiaGeography | null>(null);
+  const [indiaTileManifest, setIndiaTileManifest] = useState<IndiaTileManifest | null>(null);
+  const [indiaAdm1Features, setIndiaAdm1Features] = useState<IndiaBoundary[]>([]);
+  const [indiaAdm2Features, setIndiaAdm2Features] = useState<IndiaBoundary[]>([]);
+  const [indiaLocalityRecords, setIndiaLocalityRecords] = useState<IndiaLocality[]>([]);
   const [indiaGeoError, setIndiaGeoError] = useState<string | null>(null);
   const [geoSelection, setGeoSelection] = useState<GeoSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -273,6 +339,28 @@ export default function WorldMapExplorer() {
     y: number;
   } | null>(null);
   const [nearbyMode, setNearbyMode] = useState(false);
+
+  useEffect(() => {
+    const worker = new Worker(new URL("../workers/indiaTileWorker.ts", import.meta.url), { type: "module" });
+    indiaTileWorkerRef.current = worker;
+    worker.onmessage = (event: MessageEvent<{ id: number; cacheKey: string; ok: boolean; tile?: IndiaTileRecord; error?: string }>) => {
+      const { id, cacheKey, ok, tile, error: workerError } = event.data;
+      indiaTileWorkerPendingRef.current.delete(id);
+      if (!ok || !tile) {
+        indiaTileCacheRef.current.delete(cacheKey);
+        setIndiaGeoError(workerError ?? "India tile parsing failed");
+        return;
+      }
+      if (tile.layer === "adm1") setIndiaAdm1Features(current => mergeUniqueById(current, tile.records as IndiaBoundary[]));
+      if (tile.layer === "adm2") setIndiaAdm2Features(current => mergeUniqueById(current, tile.records as IndiaBoundary[]));
+      if (tile.layer === "localities") setIndiaLocalityRecords(current => mergeUniqueById(current, tile.records as IndiaLocality[]));
+    };
+    return () => {
+      worker.terminate();
+      indiaTileWorkerRef.current = null;
+      indiaTileWorkerPendingRef.current.clear();
+    };
+  }, []);
 
   const writeCommittedCamera = (next: Camera) => {
     if (!mapGroupRef.current) return;
@@ -402,14 +490,34 @@ export default function WorldMapExplorer() {
     [nodes]
   );
   const indiaNode = nodeById.get(INDIA_ID) ?? null;
-  const indiaAdm1Features = useMemo(
-    () => indiaGeography?.layers.adm1.features ?? [],
-    [indiaGeography]
-  );
-  const indiaAdm2Features = useMemo(
-    () => indiaGeography?.layers.adm2.features ?? [],
-    [indiaGeography]
-  );
+  const indiaGeography = useMemo<IndiaGeography | null>(() => {
+    if (!indiaTileManifest) return null;
+    return {
+      releaseId: indiaTileManifest.releaseId,
+      generatedAt: indiaTileManifest.generatedAt,
+      jurisdiction: indiaTileManifest.jurisdiction,
+      layers: {
+        adm1: {
+          label: indiaTileManifest.layers.adm1.label,
+          source: indiaTileManifest.layers.adm1.source,
+          features: indiaAdm1Features,
+          precisionNotice: indiaTileManifest.layers.adm1.precisionNotice,
+        },
+        adm2: {
+          label: indiaTileManifest.layers.adm2.label,
+          source: indiaTileManifest.layers.adm2.source,
+          features: indiaAdm2Features,
+          precisionNotice: indiaTileManifest.layers.adm2.precisionNotice,
+        },
+        localities: {
+          label: indiaTileManifest.layers.localities.label,
+          source: indiaTileManifest.layers.localities.source,
+          records: indiaLocalityRecords,
+          precisionNotice: indiaTileManifest.layers.localities.precisionNotice,
+        },
+      },
+    };
+  }, [indiaAdm1Features, indiaAdm2Features, indiaLocalityRecords, indiaTileManifest]);
   const indiaAdm2ParentById = useMemo(() => {
     if (!indiaAdm1Features.length || !indiaAdm2Features.length)
       return new Map<string, string | null>();
@@ -425,12 +533,12 @@ export default function WorldMapExplorer() {
   }, [indiaAdm1Features, indiaAdm2Features]);
   const indiaLocalityPoints = useMemo(
     () =>
-      (indiaGeography?.layers.localities.records ?? []).flatMap(record => {
+      indiaLocalityRecords.flatMap(record => {
         const point = projection([record.longitude, record.latitude]);
         if (!point || !point.every(Number.isFinite)) return [];
         return [{ record, x: point[0], y: point[1] }];
       }),
-    [indiaGeography, projection]
+    [indiaLocalityRecords, projection]
   );
   const indiaInView = useMemo(() => {
     if (!indiaNode) return false;
@@ -443,8 +551,34 @@ export default function WorldMapExplorer() {
       screenY <= size.height * 1.45
     );
   }, [camera, indiaNode, size.height, size.width]);
+  const viewportGeoBounds = useMemo(() => {
+    const inverse = projection.invert;
+    if (!inverse) return null;
+    const points = [
+      [0, 54],
+      [size.width, 54],
+      [0, size.height],
+      [size.width, size.height],
+    ].map(([screenX, screenY]) =>
+      inverse([
+        camera.x + (screenX - size.width / 2) / camera.k,
+        camera.y + (screenY - size.height / 2) / camera.k,
+      ])
+    );
+    const valid = points.filter(
+      (point): point is [number, number] => {
+        if (!point) return false;
+        return point.every(value => Number.isFinite(value));
+      }
+    );
+    if (!valid.length) return null;
+    return [
+      [Math.min(...valid.map(point => point[0])), Math.min(...valid.map(point => point[1]))],
+      [Math.max(...valid.map(point => point[0])), Math.max(...valid.map(point => point[1]))],
+    ] as [[number, number], [number, number]];
+  }, [camera, projection, size.height, size.width]);
   useEffect(() => {
-    if (indiaGeography || indiaRequestedRef.current || !indiaNode) return;
+    if (!indiaNode) return;
     const screenX = camera.x + (indiaNode.x - size.width / 2) * camera.k;
     const screenY = camera.y + (indiaNode.y - size.height / 2) * camera.k;
     const nearViewport =
@@ -454,15 +588,42 @@ export default function WorldMapExplorer() {
       screenY >= -size.height * 0.35 &&
       screenY <= size.height * 1.35;
     if (!nearViewport) return;
-    indiaRequestedRef.current = true;
-    fetch("/data/world-india-geography.json")
-      .then(response => {
-        if (!response.ok) throw new Error("India geography source unavailable");
-        return response.json() as Promise<IndiaGeography>;
-      })
-      .then(setIndiaGeography)
-      .catch((cause: Error) => setIndiaGeoError(cause.message));
-  }, [camera, indiaGeography, indiaNode, size.height, size.width]);
+    if (!indiaTileManifest && !indiaManifestRequestedRef.current) {
+      indiaManifestRequestedRef.current = true;
+      fetch("/data/india-tiles/manifest.json")
+        .then(response => {
+          if (!response.ok) throw new Error("India tile manifest unavailable");
+          return response.json() as Promise<IndiaTileManifest>;
+        })
+        .then(setIndiaTileManifest)
+        .catch((cause: Error) => setIndiaGeoError(cause.message));
+      return;
+    }
+    if (!indiaTileManifest || !viewportGeoBounds) return;
+    const requests: ["adm1" | "adm2" | "localities", string][] = [];
+    if (camera.k >= INDIA_ADM1_ZOOM)
+      tileKeysForViewport(indiaTileManifest.layers.adm1, viewportGeoBounds).forEach(key => requests.push(["adm1", key]));
+    if (camera.k >= 4.6)
+      tileKeysForViewport(indiaTileManifest.layers.adm2, viewportGeoBounds).forEach(key => requests.push(["adm2", key]));
+    if (camera.k >= 8.2)
+      tileKeysForViewport(indiaTileManifest.layers.localities, viewportGeoBounds).forEach(key => requests.push(["localities", key]));
+    requests.forEach(([layer, key]) => {
+      const cacheKey = `${layer}:${key}`;
+      if (indiaTileCacheRef.current.has(cacheKey)) return;
+      indiaTileCacheRef.current.add(cacheKey);
+      const { x, y } = tileKeyParts(key);
+      const worker = indiaTileWorkerRef.current;
+      if (!worker) {
+        indiaTileCacheRef.current.delete(cacheKey);
+        setIndiaGeoError("India tile worker unavailable");
+        return;
+      }
+      const requestId = indiaTileWorkerRequestRef.current + 1;
+      indiaTileWorkerRequestRef.current = requestId;
+      indiaTileWorkerPendingRef.current.set(requestId, cacheKey);
+      worker.postMessage({ id: requestId, cacheKey, url: `/data/india-tiles/${layer}/${x}-${y}.json` });
+    });
+  }, [camera, indiaNode, indiaTileManifest, projection, size.height, size.width, viewportGeoBounds]);
   const maxTotal = useMemo(
     () => Math.max(1, ...nodes.map(node => node.total ?? 0)),
     [nodes]

@@ -16,15 +16,27 @@ type TopicContext = {
 };
 
 type StateAction =
-  | { action: "snapshot" }
-  | { action: "favorite"; roadmapSlug: string; saved: boolean }
+  | { action: "snapshot"; actionId?: string }
+  | {
+      action: "favorite";
+      roadmapSlug: string;
+      saved: boolean;
+      actionId?: string;
+    }
   | {
       action: "progress";
       roadmapSlug: string;
       topicId: string;
       completed: boolean;
+      actionId?: string;
     }
-  | { action: "note"; roadmapSlug: string; topicId: string; note: string }
+  | {
+      action: "note";
+      roadmapSlug: string;
+      topicId: string;
+      note: string;
+      actionId?: string;
+    }
   | {
       action: "plan";
       goal: string;
@@ -33,6 +45,7 @@ type StateAction =
       hours: number;
       pace: string;
       topicIds: string[];
+      actionId?: string;
     };
 
 type AiPlanRequest = {
@@ -748,6 +761,21 @@ async function snapshot(db: D1Database, id: string) {
   };
 }
 
+function withAssetCacheHeaders(response: Response, pathname: string) {
+  if (!response.ok) return response;
+  const headers = new Headers(response.headers);
+  if (pathname === "/data/india-tiles/manifest.json") {
+    headers.set("cache-control", "public, max-age=60, must-revalidate");
+  } else if (new RegExp("^/data/india-tiles/[^/]+/").test(pathname)) {
+    headers.set("cache-control", "public, max-age=31536000, immutable");
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 async function stateResponse(request: Request, env: Env) {
   if (!env.ATLAS_DB)
     return json({ error: "ATLAS_DB binding is not configured" }, 503);
@@ -800,10 +828,10 @@ async function stateResponse(request: Request, env: Env) {
       .run();
   } else if (input.action === "plan") {
     await env.ATLAS_DB.prepare(
-      "INSERT INTO atlas_plans (id, profile_id, goal, roadmap_slug, level, hours, pace, topic_ids_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT OR IGNORE INTO atlas_plans (id, profile_id, goal, roadmap_slug, level, hours, pace, topic_ids_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
       .bind(
-        crypto.randomUUID(),
+        `${id}:${input.actionId ?? crypto.randomUUID()}`.slice(0, 200),
         id,
         input.goal.slice(0, 500),
         input.roadmapSlug,
@@ -840,6 +868,6 @@ export default {
           "access-control-allow-headers": "content-type,x-atlas-profile",
         },
       });
-    return env.ASSETS.fetch(request);
+    return withAssetCacheHeaders(await env.ASSETS.fetch(request), url.pathname);
   },
 };

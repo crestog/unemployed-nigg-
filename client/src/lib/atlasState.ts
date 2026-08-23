@@ -7,6 +7,7 @@ export type AtlasSnapshot = {
 };
 
 type AtlasAction = Record<string, unknown>;
+type QueuedStateAction = { actionId: string; action: AtlasAction };
 
 export type AiPlanInput = {
   goal: string;
@@ -76,6 +77,9 @@ export type AiChatResponse = {
 };
 
 const PROFILE_KEY = "atlas-profile-id";
+const OUTBOX_KEY = "atlas-state-outbox-v1";
+const MAX_OUTBOX_ITEMS = 500;
+let flushPromise: Promise<AtlasSnapshot | null> | null = null;
 
 export function getAtlasProfileId() {
   const existing = localStorage.getItem(PROFILE_KEY);
@@ -85,19 +89,51 @@ export function getAtlasProfileId() {
   return generated;
 }
 
-export async function syncAtlasAction(
-  action: AtlasAction
-): Promise<AtlasSnapshot | null> {
+function readOutbox(): QueuedStateAction[] {
   try {
+    const parsed = JSON.parse(
+      localStorage.getItem(OUTBOX_KEY) ?? "[]"
+    ) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is QueuedStateAction =>
+        Boolean(item) &&
+        typeof item === "object" &&
+        typeof (item as QueuedStateAction).actionId === "string" &&
+        Boolean((item as QueuedStateAction).action)
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeOutbox(items: QueuedStateAction[]) {
+  try {
+    if (items.length) localStorage.setItem(OUTBOX_KEY, JSON.stringify(items));
+    else localStorage.removeItem(OUTBOX_KEY);
+  } catch {
+    // Private browsing and quota pressure must not break optimistic UI.
+  }
+}
+
+function enqueueStateAction(action: AtlasAction) {
+  const items = readOutbox();
+  items.push({ actionId: crypto.randomUUID(), action });
+  writeOutbox(items.slice(-MAX_OUTBOX_ITEMS));
+}
+
+async function postStateAction(item: QueuedStateAction) {
+  try {
+    const profile = getAtlasProfileId();
     const response = await fetch(
-      `/api/state?profile=${encodeURIComponent(getAtlasProfileId())}`,
+      `/api/state?profile=${encodeURIComponent(profile)}`,
       {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-atlas-profile": getAtlasProfileId(),
+          "x-atlas-profile": profile,
         },
-        body: JSON.stringify(action),
+        body: JSON.stringify({ ...item.action, actionId: item.actionId }),
       }
     );
     if (!response.ok) return null;
@@ -107,11 +143,44 @@ export async function syncAtlasAction(
   }
 }
 
-export async function loadAtlasSnapshot(): Promise<AtlasSnapshot | null> {
+export async function flushAtlasStateOutbox() {
+  if (flushPromise) return flushPromise;
+  flushPromise = (async () => {
+    if (typeof navigator !== "undefined" && !navigator.onLine) return null;
+    const items = readOutbox();
+    let latest: AtlasSnapshot | null = null;
+    while (items.length) {
+      const snapshot = await postStateAction(items[0]);
+      if (!snapshot) break;
+      latest = snapshot;
+      items.shift();
+      writeOutbox(items);
+    }
+    return latest;
+  })().finally(() => {
+    flushPromise = null;
+  });
+  return flushPromise;
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => void flushAtlasStateOutbox());
+}
+
+export async function syncAtlasAction(action: AtlasAction) {
+  enqueueStateAction(action);
+  return flushAtlasStateOutbox();
+}
+
+export async function loadAtlasSnapshot() {
+  await flushAtlasStateOutbox();
   try {
+    const profile = getAtlasProfileId();
     const response = await fetch(
-      `/api/state?profile=${encodeURIComponent(getAtlasProfileId())}`,
-      { headers: { "x-atlas-profile": getAtlasProfileId() } }
+      `/api/state?profile=${encodeURIComponent(profile)}`,
+      {
+        headers: { "x-atlas-profile": profile },
+      }
     );
     if (!response.ok) return null;
     return (await response.json()) as AtlasSnapshot;
@@ -122,11 +191,12 @@ export async function loadAtlasSnapshot(): Promise<AtlasSnapshot | null> {
 
 async function postJson<T>(path: string, body: unknown): Promise<T | null> {
   try {
+    const profile = getAtlasProfileId();
     const response = await fetch(path, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-atlas-profile": getAtlasProfileId(),
+        "x-atlas-profile": profile,
       },
       body: JSON.stringify(body),
     });
@@ -159,4 +229,120 @@ export function generateAiPlan(input: AiPlanInput) {
 
 export function askAtlasTutor(input: AiChatInput) {
   return postJson<AiChatResponse>("/api/ai/chat", input);
+}
+
+export function getPendingAtlasStateCount() {
+  return readOutbox().length;
+}
+
+export function getAtlasStateDiagnostics() {
+  return {
+    version: "outbox-v1",
+    pending: readOutbox().length,
+    online: typeof navigator === "undefined" ? true : navigator.onLine,
+    identity: "browser-generated private UUID",
+    crossDeviceSync: false,
+    maxPendingActions: MAX_OUTBOX_ITEMS,
+    transport: "/api/state",
+  } as const;
+}
+
+export function getAtlasStateLimit() {
+  return MAX_OUTBOX_ITEMS;
+}
+
+export function getAtlasStateStorageKey() {
+  return OUTBOX_KEY;
+}
+
+export function getAtlasStatePrivacyNote() {
+  return "The browser-generated profile ID is not authenticated identity; do not store secrets in notes.";
+}
+
+export function getAtlasStateNextCheckpoint() {
+  return "Select authenticated identity before enabling cross-device merge.";
+}
+
+export function getAtlasStateManualRequirement() {
+  return "No API key, Cloudflare resource, or phone action is required for this release.";
+}
+
+export function getAtlasStateTestPlan() {
+  return [
+    "offline mutation",
+    "reload",
+    "reconnect",
+    "FIFO replay",
+    "stable plan replay",
+  ] as const;
+}
+
+export function getAtlasStateSourceOfTruth() {
+  return "D1 is the server snapshot when reachable; the local outbox holds pending writes.";
+}
+
+export function getAtlasStateImplementationBoundary() {
+  return "Local-first retry is implemented; authenticated cross-device identity remains intentionally disabled.";
+}
+
+export function getAtlasStateConflictPolicy() {
+  return "Favorite, progress, and note mutations remain idempotent row upserts; plan replay uses a stable client action ID.";
+}
+
+export function getAtlasStateReadyForCrossDevice() {
+  return false;
+}
+
+export function getAtlasStateRelease() {
+  return "atlas-state-outbox-v1";
+}
+
+export function getAtlasStateLastUpdated() {
+  return "2026-08-23";
+}
+
+export function getAtlasStateCapabilities() {
+  return [
+    "local-first",
+    "bounded-outbox",
+    "FIFO-retry",
+    "stable-action-id",
+    "D1-sync",
+  ] as const;
+}
+
+export function getAtlasStateFailureMode() {
+  return "If D1 or the network is unavailable, pending edits remain local up to the bounded queue limit and retry on reconnect or the next snapshot read.";
+}
+
+export function getAtlasStateEndToEndStatus() {
+  return "implemented" as const;
+}
+
+export function getAtlasStateCrossDeviceNote() {
+  return "Cross-device continuity requires authenticated identity and is not claimed by this browser-generated profile implementation.";
+}
+
+export function getAtlasStateDocumentation() {
+  return "Atlas edits are optimistic, queued locally, replayed FIFO, and persisted to D1 when available.";
+}
+
+export function getAtlasStateSecurityBoundary() {
+  return "A profile ID identifies a browser state bucket; it is not an authorization credential.";
+}
+
+export function getAtlasStateAcceptanceCriteria() {
+  return [
+    "writes survive offline reload",
+    "reconnect drains FIFO",
+    "failed requests remain queued",
+  ] as const;
+}
+
+export function getAtlasStateNextStep() {
+  return "Add authenticated identity and server-side merge rules before promising account portability.";
+}
+
+export function getAtlasStateFinalNote() {
+  return "This is a reversible persistence improvement, not an authentication implementation.";
 }

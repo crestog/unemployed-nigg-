@@ -307,6 +307,7 @@ def main() -> None:
             "--download-dir", str(deep_download_dir),
             "--spec-output", str(deep_spec),
             "--workers", str(max(2, min(8, (os.cpu_count() or 1) * 2))),
+            "--allow-partial",
         ], cwd=repo)
         print(f"[AtlasWorld] phase=deep-source-prepare-complete spec={deep_spec}", flush=True)
 

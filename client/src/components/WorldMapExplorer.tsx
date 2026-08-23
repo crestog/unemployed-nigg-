@@ -81,8 +81,8 @@ const mapCollection = feature(
     .countries
 ) as unknown as GeoJSON.FeatureCollection<GeoJSON.Geometry, { name?: string }>;
 const countryFeatures = mapCollection.features as MapFeature[];
-const MIN_ZOOM = 0.72;
-const MAX_ZOOM = 18;
+const MIN_ZOOM = 0.48;
+const MAX_ZOOM = 36;
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 const topologyId = (item: MapFeature) => String(item.id ?? "").padStart(3, "0");

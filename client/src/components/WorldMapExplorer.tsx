@@ -622,8 +622,8 @@ export default function WorldMapExplorer() {
       [size.width, size.height],
     ].map(([screenX, screenY]) =>
       inverse([
-        camera.x + (screenX - size.width / 2) / camera.k,
-        camera.y + (screenY - size.height / 2) / camera.k,
+        size.width / 2 + (screenX - camera.x) / camera.k,
+        size.height / 2 + (screenY - camera.y) / camera.k,
       ])
     );
     const valid = points.filter((point): point is [number, number] => {

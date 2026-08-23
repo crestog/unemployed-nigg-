@@ -3,8 +3,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { feature } from "topojson-client";
 import {
@@ -15,10 +13,10 @@ import {
   geoPath,
 } from "d3-geo";
 import worldTopology from "world-atlas/countries-50m.json";
-import WorldSemanticCanvas, {
-  type SemanticBoundary,
-  type SemanticLocality,
-} from "./WorldSemanticCanvas";
+import { type SemanticBoundary, type SemanticLocality } from "./WorldSemanticCanvas";
+import MapLibreWorldScene, {
+  type MapLibreWorldSceneHandle,
+} from "./MapLibreWorldScene";
 import {
   ChevronLeft,
   Copy,
@@ -33,6 +31,13 @@ import {
 } from "lucide-react";
 
 type Camera = { x: number; y: number; k: number };
+type MapViewState = {
+  center: [number, number];
+  zoom: number;
+  bearing: number;
+  pitch: number;
+  bounds: [[number, number], [number, number]];
+};
 type MapFeature = GeoJSON.Feature<GeoJSON.Geometry, { name?: string }> & {
   id?: string | number;
 };
@@ -185,7 +190,6 @@ type GeoSearchResult = {
   featureCode?: string;
 };
 
-type HoverState = { id: string } | null;
 
 const mapCollection = feature(
   worldTopology as never,
@@ -290,46 +294,26 @@ const boundaryToFeature = (boundary: IndiaBoundary): MapFeature => ({
   geometry: normalizeD3Geometry(boundary.geometry),
 });
 
-function overlayTarget(target: EventTarget | null) {
-  return (
-    target instanceof Element && Boolean(target.closest("[data-world-overlay]"))
-  );
-}
-
-function touchDistance(
-  first: { x: number; y: number },
-  second: { x: number; y: number }
+function geographicPointInBounds(
+  longitude: number,
+  latitude: number,
+  bounds: [[number, number], [number, number]] | null | undefined
 ) {
-  return Math.hypot(second.x - first.x, second.y - first.y);
-}
-
-function touchMidpoint(
-  first: { x: number; y: number },
-  second: { x: number; y: number }
-) {
-  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+  if (!bounds) return false;
+  const [[west, south], [east, north]] = bounds;
+  const longitudeVisible = west <= east
+    ? longitude >= west && longitude <= east
+    : longitude >= west || longitude <= east;
+  return longitudeVisible && latitude >= south && latitude <= north;
 }
 
 export default function WorldMapExplorer() {
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const movedRef = useRef(false);
   const restoredRef = useRef(false);
-  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
-  const pinchRef = useRef<{
-    distance: number;
-    midpoint: { x: number; y: number };
-    camera: Camera;
-  } | null>(null);
-  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(
-    null
-  );
-  const suppressClickUntilRef = useRef(0);
   const cameraRef = useRef<Camera>({ x: 640, y: 380, k: 1 });
-  const wheelCommitRef = useRef<number | null>(null);
-  const sceneRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ pointer: number; x: number; y: number } | null>(
-    null
-  );
+  const mapSceneRef = useRef<MapLibreWorldSceneHandle>(null);
+  const mapViewRef = useRef<MapViewState | null>(null);
+  const selectionCameraRef = useRef<MapViewState | null>(null);
   const indiaManifestRequestedRef = useRef(false);
   const indiaTileCacheRef = useRef(new Set<string>());
   const indiaTileWorkerRef = useRef<Worker | null>(null);
@@ -356,19 +340,50 @@ export default function WorldMapExplorer() {
   const [indiaTileRetryNonce, setIndiaTileRetryNonce] = useState(0);
   const [geoSelection, setGeoSelection] = useState<GeoSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const previousSizeRef = useRef({ width: 1280, height: 760 });
   const [size, setSize] = useState({ width: 1280, height: 760 });
   const [camera, setCamera] = useState<Camera>({ x: 640, y: 380, k: 1 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [hovered, setHovered] = useState<HoverState>(null);
+  const [mapView, setMapView] = useState<{
+    center: [number, number];
+    zoom: number;
+    bearing: number;
+    pitch: number;
+    bounds: [[number, number], [number, number]];
+    baseZoom?: number;
+  } | null>(null);
   const [query, setQuery] = useState("");
   const [showResults, setShowResults] = useState(false);
-  const [drag, setDrag] = useState<{
-    pointer: number;
-    x: number;
-    y: number;
-  } | null>(null);
   const [nearbyMode, setNearbyMode] = useState(false);
+  const initialMapView = useMemo<MapViewState | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    if (params.get("world") !== "1") return undefined;
+    const lng = Number.parseFloat(params.get("wmlng") ?? "");
+    const lat = Number.parseFloat(params.get("wmlat") ?? "");
+    const zoom = Number.parseFloat(params.get("wmlz") ?? "");
+    const bearing = Number.parseFloat(params.get("wmlb") ?? "");
+    const pitch = Number.parseFloat(params.get("wmlp") ?? "");
+    if ([lng, lat, zoom].every(Number.isFinite)) {
+      return {
+        center: [lng, lat],
+        zoom,
+        bearing: Number.isFinite(bearing) ? bearing : 0,
+        pitch: Number.isFinite(pitch) ? pitch : 0,
+        bounds: [[-180, -58], [180, 84]],
+      };
+    }
+    const legacyK = Number.parseFloat(params.get("wxz") ?? "");
+    if (Number.isFinite(legacyK)) {
+      return {
+        center: [0, 18],
+        zoom: 1.25 + Math.log2(Math.max(0.2, legacyK)),
+        bearing: 0,
+        pitch: 0,
+        bounds: [[-180, -58], [180, 84]],
+      };
+    }
+    return undefined;
+  }, []);
 
   useEffect(() => {
     const worker = new Worker(
@@ -443,42 +458,44 @@ export default function WorldMapExplorer() {
     };
   }, []);
 
-  const cameraTransform = (next: Camera) =>
-    `translate(${next.x - (size.width / 2) * next.k}px, ${next.y - (size.height / 2) * next.k}px) scale(${next.k})`;
-  const writeCamera = (next: Camera) => {
-    const scene = sceneRef.current;
-    if (!scene) return;
-    scene.style.transformOrigin = "0 0";
-    scene.style.transform = cameraTransform(next);
+  const mapViewCommitRef = useRef<number | null>(null);
+  const mapViewPendingRef = useRef<typeof mapView>(null);
+  const cameraFromMapView = (next: NonNullable<typeof mapView>): Camera => ({
+    x: size.width / 2,
+    y: size.height / 2,
+    k: clamp(2 ** (next.zoom - 1.25), MIN_ZOOM, MAX_ZOOM),
+  });
+  const onMapViewChange = (next: NonNullable<typeof mapView>) => {
+    cameraRef.current = cameraFromMapView(next);
+    mapViewRef.current = next;
+    mapViewPendingRef.current = next;
+    if (mapViewCommitRef.current !== null)
+      window.clearTimeout(mapViewCommitRef.current);
+    mapViewCommitRef.current = window.setTimeout(() => {
+      mapViewCommitRef.current = null;
+      const pending = mapViewPendingRef.current;
+      if (pending) {
+        setMapView(pending);
+        setCamera(cameraFromMapView(pending));
+      }
+    }, 120);
   };
-  const applyCamera = (next: Camera, commit = false) => {
-    const current = cameraRef.current;
-    const normalized: Camera = {
-      k: clamp(
-        Number.isFinite(next.k) ? next.k : current.k,
-        MIN_ZOOM,
-        MAX_ZOOM
-      ),
-      x: Number.isFinite(next.x) ? next.x : current.x,
-      y: Number.isFinite(next.y) ? next.y : current.y,
-    };
-    cameraRef.current = normalized;
-    // One compositor-owned scene contains both SVG geography and Canvas2D
-    // semantics. React/Lod work waits for the gesture commit.
-    writeCamera(normalized);
-    if (commit) setCamera(normalized);
+  const rememberSelectionCamera = () => {
+    if (!selectionCameraRef.current && mapViewRef.current)
+      selectionCameraRef.current = { ...mapViewRef.current };
   };
-  const commitCamera = () => setCamera(cameraRef.current);
-
-  useEffect(() => {
-    cameraRef.current = camera;
-    writeCamera(camera);
-  }, [camera, size.height, size.width]);
-
+  const closeInspector = () => {
+    const previous = selectionCameraRef.current;
+    selectionCameraRef.current = null;
+    setSelectedId(null);
+    setGeoSelection(null);
+    setNearbyMode(false);
+    if (previous) mapSceneRef.current?.setView(previous);
+  };
   useEffect(
     () => () => {
-      if (wheelCommitRef.current !== null)
-        window.clearTimeout(wheelCommitRef.current);
+      if (mapViewCommitRef.current !== null)
+        window.clearTimeout(mapViewCommitRef.current);
     },
     []
   );
@@ -492,20 +509,6 @@ export default function WorldMapExplorer() {
       .then(setRelease)
       .catch((cause: Error) => setError(cause.message));
   }, []);
-
-  useEffect(() => {
-    const previous = previousSizeRef.current;
-    if (previous.width === size.width && previous.height === size.height)
-      return;
-    previousSizeRef.current = size;
-    const current = cameraRef.current;
-    const next = {
-      ...current,
-      x: current.x + ((size.width - previous.width) / 2) * current.k,
-      y: current.y + ((size.height - previous.height) / 2) * current.k,
-    };
-    applyCamera(next, true);
-  }, [size]);
 
   useEffect(() => {
     if (!surfaceRef.current) return;
@@ -533,18 +536,6 @@ export default function WorldMapExplorer() {
     [size.height, size.width]
   );
   const pathMaker = useMemo(() => geoPath(projection), [projection]);
-  const worldPath = useMemo(() => pathMaker(mapCollection) ?? "", [pathMaker]);
-  const countryPaths = useMemo(
-    () =>
-      countryFeatures.map((country, index) => ({
-        country,
-        id: topologyId(country),
-        key: `country-${index}-${topologyId(country)}`,
-        d: pathMaker(country) ?? "",
-      })),
-    [pathMaker]
-  );
-
   const recordsById = useMemo(
     () =>
       new Map(
@@ -641,55 +632,17 @@ export default function WorldMapExplorer() {
       }),
     [indiaLocalityRecords, projection]
   );
-  const indiaSceneBounds = useMemo(() => {
+  const indiaGeoBounds = useMemo(() => {
     if (!indiaNode) return null;
-    return pathMaker.bounds(indiaNode.feature as GeoJSON.Feature);
-  }, [indiaNode, pathMaker]);
+    return geoBounds(indiaNode.feature as GeoJSON.Feature) as [[number, number], [number, number]];
+  }, [indiaNode]);
   const indiaInView = useMemo(() => {
-    if (!indiaSceneBounds) return false;
-    const [[minX, minY], [maxX, maxY]] = indiaSceneBounds;
-    const left = camera.x + (minX - size.width / 2) * camera.k;
-    const right = camera.x + (maxX - size.width / 2) * camera.k;
-    const top = camera.y + (minY - size.height / 2) * camera.k;
-    const bottom = camera.y + (maxY - size.height / 2) * camera.k;
-    const margin = Math.max(size.width, size.height) * 0.55;
-    return (
-      right >= -margin &&
-      left <= size.width + margin &&
-      bottom >= 54 - margin &&
-      top <= size.height + margin
-    );
-  }, [camera, indiaSceneBounds, size.height, size.width]);
-  const viewportGeoBounds = useMemo(() => {
-    const inverse = projection.invert;
-    if (!inverse) return null;
-    const points = [
-      [0, 54],
-      [size.width, 54],
-      [0, size.height],
-      [size.width, size.height],
-    ].map(([screenX, screenY]) =>
-      inverse([
-        size.width / 2 + (screenX - camera.x) / camera.k,
-        size.height / 2 + (screenY - camera.y) / camera.k,
-      ])
-    );
-    const valid = points.filter((point): point is [number, number] => {
-      if (!point) return false;
-      return point.every(value => Number.isFinite(value));
-    });
-    if (!valid.length) return null;
-    return [
-      [
-        Math.min(...valid.map(point => point[0])),
-        Math.min(...valid.map(point => point[1])),
-      ],
-      [
-        Math.max(...valid.map(point => point[0])),
-        Math.max(...valid.map(point => point[1])),
-      ],
-    ] as [[number, number], [number, number]];
-  }, [camera, projection, size.height, size.width]);
+    if (!indiaGeoBounds || !mapView) return false;
+    const [[west, south], [east, north]] = mapView.bounds;
+    const [[indiaWest, indiaSouth], [indiaEast, indiaNorth]] = indiaGeoBounds;
+    return east >= indiaWest && west <= indiaEast && north >= indiaSouth && south <= indiaNorth;
+  }, [indiaGeoBounds, mapView]);
+  const viewportGeoBounds = mapView?.bounds ?? null;
   useEffect(() => {
     if (!indiaNode || camera.k < 1.45 || !indiaInView) return;
     if (!indiaTileManifest && !indiaManifestRequestedRef.current) {
@@ -773,7 +726,6 @@ export default function WorldMapExplorer() {
     viewportGeoBounds,
   ]);
   const selected = selectedId ? (nodeById.get(selectedId) ?? null) : null;
-  const hoveredNode = hovered ? (nodeById.get(hovered.id) ?? null) : null;
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return [];
@@ -801,60 +753,16 @@ export default function WorldMapExplorer() {
     const indiaDetailPending =
       indiaInView && camera.k >= 1.45 && indiaAdm1Features.length === 0;
     if (camera.k > 2.45 && !indiaDetailPending) return labels;
-    const boxes: {
-      left: number;
-      top: number;
-      right: number;
-      bottom: number;
-    }[] = [];
-    const candidates = [...nodes]
+    [...nodes]
       .sort((a, b) => {
         if (a.id === selectedId) return -1;
         if (b.id === selectedId) return 1;
         return (b.total ?? -1) - (a.total ?? -1);
       })
-      .slice(0, camera.k < 1.35 ? 52 : 36);
-    candidates.forEach(node => {
-      const screenX = camera.x + (node.x - size.width / 2) * camera.k;
-      const screenY = camera.y + (node.y - size.height / 2) * camera.k;
-      const width = clamp(node.name.length * 5.2 + 12, 28, 118);
-      const height = 18;
-      const box = {
-        left: screenX - width / 2,
-        top: screenY - height / 2,
-        right: screenX + width / 2,
-        bottom: screenY + height / 2,
-      };
-      if (
-        box.right < -24 ||
-        box.left > size.width + 24 ||
-        box.bottom < 58 ||
-        box.top > size.height + 24
-      )
-        return;
-      if (
-        boxes.some(
-          other =>
-            box.left < other.right &&
-            box.right > other.left &&
-            box.top < other.bottom &&
-            box.bottom > other.top
-        )
-      )
-        return;
-      labels.add(node.id);
-      boxes.push(box);
-    });
+      .slice(0, camera.k < 1.35 ? 52 : 36)
+      .forEach(node => labels.add(node.id));
     return labels;
-  }, [
-    camera,
-    indiaAdm1Features.length,
-    indiaInView,
-    nodes,
-    selectedId,
-    size.height,
-    size.width,
-  ]);
+  }, [camera.k, indiaAdm1Features.length, indiaInView, nodes, selectedId]);
   const indiaAdm1Render = useMemo(
     () =>
       indiaAdm1Features.flatMap(boundary => {
@@ -890,56 +798,14 @@ export default function WorldMapExplorer() {
   const indiaAdm1LabelIds = useMemo(() => {
     const labels = new Set<string>();
     if (camera.k < 1.95 || camera.k > 7.8) return labels;
-    const boxes: {
-      left: number;
-      top: number;
-      right: number;
-      bottom: number;
-    }[] = [];
-    for (const item of indiaAdm1Render) {
-      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
-      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
-      const width = clamp(item.boundary.name.length * 5.4 + 12, 48, 142);
-      const height = 18;
-      const box = {
-        left: screenX - width / 2,
-        top: screenY - height / 2,
-        right: screenX + width / 2,
-        bottom: screenY + height / 2,
-      };
-      if (
-        box.right < -20 ||
-        box.left > size.width + 20 ||
-        box.bottom < 58 ||
-        box.top > size.height + 20
-      )
-        continue;
-      if (
-        boxes.some(
-          other =>
-            box.left < other.right &&
-            box.right > other.left &&
-            box.top < other.bottom &&
-            box.bottom > other.top
-        )
-      )
-        continue;
-      labels.add(item.boundary.id);
-      boxes.push(box);
-    }
+    indiaAdm1Render.forEach(item => labels.add(item.boundary.id));
     return labels;
-  }, [camera, indiaAdm1Render, size.height, size.width]);
+  }, [camera.k, indiaAdm1Render]);
   const visibleIndiaAdm2 = useMemo(() => {
     if (camera.k < 4.9) return [];
     const candidates = indiaAdm2Render.filter(item => {
-      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
-      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
-      return (
-        screenX >= -120 &&
-        screenX <= size.width + 120 &&
-        screenY >= 54 &&
-        screenY <= size.height + 120
-      );
+      const [longitude, latitude] = geoCentroid(boundaryToFeature(item.boundary));
+      return geographicPointInBounds(longitude, latitude, viewportGeoBounds);
     });
     const budget = camera.k < 7.5 ? 260 : camera.k < 11 ? 620 : 1100;
     return candidates
@@ -949,111 +815,32 @@ export default function WorldMapExplorer() {
           (b.boundary.id === geoSelection?.id ? -1 : 0)
       )
       .slice(0, budget);
-  }, [camera, geoSelection?.id, indiaAdm2Render, size.height, size.width]);
+  }, [camera.k, geoSelection?.id, indiaAdm2Render, viewportGeoBounds]);
   const indiaAdm2LabelIds = useMemo(() => {
     const labels = new Set<string>();
     if (camera.k < 6.4) return labels;
-    const boxes: {
-      left: number;
-      top: number;
-      right: number;
-      bottom: number;
-    }[] = [];
     const budget = camera.k < 9.5 ? 54 : 150;
-    for (const item of visibleIndiaAdm2.slice(0, budget * 2)) {
-      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
-      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
-      const width = clamp(item.boundary.name.length * 4.8 + 10, 34, 112);
-      const height = 15;
-      const box = {
-        left: screenX - width / 2,
-        top: screenY - height / 2,
-        right: screenX + width / 2,
-        bottom: screenY + height / 2,
-      };
-      if (
-        box.right < -12 ||
-        box.left > size.width + 12 ||
-        box.bottom < 58 ||
-        box.top > size.height + 12
-      )
-        continue;
-      if (
-        boxes.some(
-          other =>
-            box.left < other.right &&
-            box.right > other.left &&
-            box.top < other.bottom &&
-            box.bottom > other.top
-        )
-      )
-        continue;
-      labels.add(item.boundary.id);
-      boxes.push(box);
-      if (labels.size >= budget) break;
-    }
+    visibleIndiaAdm2.slice(0, budget).forEach(item => labels.add(item.boundary.id));
     return labels;
-  }, [camera, size.height, size.width, visibleIndiaAdm2]);
+  }, [camera.k, visibleIndiaAdm2]);
   const visibleIndiaLocalities = useMemo(() => {
     if (camera.k < 8.9) return [];
-    const candidates = indiaLocalityPoints.filter(item => {
-      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
-      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
-      return (
-        screenX >= -80 &&
-        screenX <= size.width + 80 &&
-        screenY >= 54 &&
-        screenY <= size.height + 80
-      );
-    });
+    const candidates = indiaLocalityPoints.filter(item =>
+      geographicPointInBounds(item.record.longitude, item.record.latitude, viewportGeoBounds)
+    );
     const budget = camera.k < 12 ? 420 : camera.k < 20 ? 900 : 1500;
     return candidates
       .sort((a, b) => b.record.population - a.record.population)
       .slice(0, budget);
-  }, [camera, indiaLocalityPoints, size.height, size.width]);
+  }, [camera.k, indiaLocalityPoints, viewportGeoBounds]);
   const indiaLocalityLabelIds = useMemo(() => {
     const labels = new Set<string>();
     if (camera.k < 12) return labels;
-    const boxes: {
-      left: number;
-      top: number;
-      right: number;
-      bottom: number;
-    }[] = [];
-    for (const item of visibleIndiaLocalities) {
-      const screenX = camera.x + (item.x - size.width / 2) * camera.k;
-      const screenY = camera.y + (item.y - size.height / 2) * camera.k;
-      const width = clamp(item.record.name.length * 4.6 + 10, 36, 120);
-      const height = 15;
-      const box = {
-        left: screenX + 5,
-        top: screenY - height / 2,
-        right: screenX + 5 + width,
-        bottom: screenY + height / 2,
-      };
-      if (
-        box.right < -12 ||
-        box.left > size.width + 12 ||
-        box.bottom < 58 ||
-        box.top > size.height + 12
-      )
-        continue;
-      if (
-        boxes.some(
-          other =>
-            box.left < other.right &&
-            box.right > other.left &&
-            box.top < other.bottom &&
-            box.bottom > other.top
-        )
-      )
-        continue;
-      labels.add(item.record.id);
-      boxes.push(box);
-      if (labels.size >= (camera.k < 18 ? 90 : 180)) break;
-    }
+    visibleIndiaLocalities
+      .slice(0, camera.k < 18 ? 90 : 180)
+      .forEach(item => labels.add(item.record.id));
     return labels;
-  }, [camera, size.height, size.width, visibleIndiaLocalities]);
+  }, [camera.k, visibleIndiaLocalities]);
   const geoMatches = useMemo<GeoSearchResult[]>(() => {
     const needle = query.trim().toLowerCase();
     if (!indiaGeography || needle.length < 2) return [];
@@ -1118,28 +905,25 @@ export default function WorldMapExplorer() {
     restoredRef.current = true;
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     if (params.get("world") !== "1") return;
-    const nextK = Number.parseFloat(params.get("wxz") ?? "");
-    const nextX = Number.parseFloat(params.get("wxx") ?? "");
-    const nextY = Number.parseFloat(params.get("wxy") ?? "");
-    if ([nextK, nextX, nextY].every(Number.isFinite)) {
-      setCamera({
-        k: clamp(nextK, MIN_ZOOM, MAX_ZOOM),
-        x: nextX,
-        y: nextY,
-      });
+    const legacyK = Number.parseFloat(params.get("wxz") ?? "");
+    if (!initialMapView && Number.isFinite(legacyK)) {
+      setCamera(current => ({ ...current, k: clamp(legacyK, MIN_ZOOM, MAX_ZOOM) }));
     }
     setSelectedId(params.get("wxc") || null);
     setNearbyMode(params.get("wxm") === "nearby");
-  }, []);
+  }, [initialMapView]);
 
   useEffect(() => {
     if (!release) return;
     const timeout = window.setTimeout(() => {
       const params = new URLSearchParams();
       params.set("world", "1");
-      params.set("wxx", camera.x.toFixed(1));
-      params.set("wxy", camera.y.toFixed(1));
-      params.set("wxz", camera.k.toFixed(3));
+      const view = mapViewRef.current;
+      params.set("wmlng", (view?.center[0] ?? 0).toFixed(6));
+      params.set("wmlat", (view?.center[1] ?? 18).toFixed(6));
+      params.set("wmlz", (view?.zoom ?? 1.25).toFixed(4));
+      params.set("wmlb", (view?.bearing ?? 0).toFixed(2));
+      params.set("wmlp", (view?.pitch ?? 0).toFixed(2));
       if (selectedId) params.set("wxc", selectedId);
       if (nearbyMode) params.set("wxm", "nearby");
       window.history.replaceState(
@@ -1149,43 +933,31 @@ export default function WorldMapExplorer() {
       );
     }, 180);
     return () => window.clearTimeout(timeout);
-  }, [camera, nearbyMode, release, selectedId]);
+  }, [camera, mapView, nearbyMode, release, selectedId]);
 
-  const zoomAt = (px: number, py: number, factor: number, commit = false) => {
-    const current = cameraRef.current;
-    const nextK = clamp(current.k * factor, MIN_ZOOM, MAX_ZOOM);
-    const mapX = (px - current.x) / current.k + size.width / 2;
-    const mapY = (py - current.y) / current.k + size.height / 2;
-    applyCamera(
-      {
-        k: nextK,
-        x: px - (mapX - size.width / 2) * nextK,
-        y: py - (mapY - size.height / 2) * nextK,
-      },
-      commit
-    );
+  const zoomAt = (_px: number, _py: number, factor: number, _commit = false) => {
+    mapSceneRef.current?.zoomBy(factor);
   };
 
   const focusNode = (node: WorldNode, zoom = 3.8) => {
+    rememberSelectionCamera();
     setGeoSelection(null);
     setSelectedId(node.id);
     setQuery("");
     setShowResults(false);
-    const next = {
-      k: zoom,
-      x: size.width / 2 - (node.x - size.width / 2) * zoom,
-      y: size.height / 2 - (node.y - size.height / 2) * zoom,
-    };
-    applyCamera(next, true);
+    mapSceneRef.current?.focusFeature(node.feature as GeoJSON.Feature, zoom);
   };
-  const focusGeoPoint = (point: { x: number; y: number }, zoom: number) => {
-    const nextK = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
-    const next = {
-      k: nextK,
-      x: size.width / 2 - (point.x - size.width / 2) * nextK,
-      y: size.height / 2 - (point.y - size.height / 2) * nextK,
-    };
-    applyCamera(next, true);
+  const focusGeoPoint = (
+    point: { x: number; y: number },
+    zoom: number,
+    center?: [number, number]
+  ) => {
+    if (center) {
+      mapSceneRef.current?.focusCenter(center, zoom);
+      return;
+    }
+    const geographicPoint = projection.invert?.([point.x, point.y]);
+    if (geographicPoint) mapSceneRef.current?.focusCenter(geographicPoint, zoom);
   };
   const selectGeoEntity = (
     kind: Exclude<GeoEntityKind, "country">,
@@ -1196,6 +968,7 @@ export default function WorldMapExplorer() {
     parentId: string | null,
     details: { population?: number; featureCode?: string } = {}
   ) => {
+    rememberSelectionCamera();
     setSelectedId(INDIA_ID);
     setGeoSelection({
       kind,
@@ -1214,7 +987,21 @@ export default function WorldMapExplorer() {
     });
     setQuery("");
     setShowResults(false);
-    focusGeoPoint(point, kind === "adm1" ? 4.1 : kind === "adm2" ? 7.2 : 12.5);
+    const center =
+      kind === "locality"
+        ? (() => {
+            const locality = indiaLocalityRecords.find(item => item.id === id);
+            return locality ? [locality.longitude, locality.latitude] as [number, number] : undefined;
+          })()
+        : (() => {
+            const boundary = [...indiaAdm1Features, ...indiaAdm2Features].find(item => item.id === id);
+            if (!boundary) return undefined;
+            const [longitude, latitude] = geoCentroid(boundaryToFeature(boundary));
+            return Number.isFinite(longitude) && Number.isFinite(latitude)
+              ? [longitude, latitude] as [number, number]
+              : undefined;
+          })();
+    focusGeoPoint(point, kind === "adm1" ? 4.1 : kind === "adm2" ? 7.2 : 12.5, center);
   };
   const focusGeoResult = (result: GeoSearchResult) => {
     selectGeoEntity(
@@ -1251,9 +1038,9 @@ export default function WorldMapExplorer() {
     setGeoSelection(null);
   };
   const reset = () => {
+    selectionCameraRef.current = null;
     setGeoSelection(null);
-    const next = { x: size.width / 2, y: size.height / 2, k: 1 };
-    applyCamera(next, true);
+    mapSceneRef.current?.reset();
     setSelectedId(null);
     setNearbyMode(false);
     setQuery("");
@@ -1285,244 +1072,6 @@ export default function WorldMapExplorer() {
     }
   };
 
-  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (overlayTarget(event.target)) return;
-    movedRef.current = false;
-    pointersRef.current.set(event.pointerId, {
-      x: event.clientX,
-      y: event.clientY,
-    });
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId);
-    } catch {
-      // Pointer capture is unavailable for synthetic or platform-owned touch events.
-    }
-    if (pointersRef.current.size === 1) {
-      const nextDrag = {
-        pointer: event.pointerId,
-        x: event.clientX,
-        y: event.clientY,
-      };
-      dragRef.current = nextDrag;
-      setDrag(nextDrag);
-    } else if (pointersRef.current.size === 2) {
-      const [first, second] = Array.from(pointersRef.current.values());
-      pinchRef.current = {
-        distance: touchDistance(first, second),
-        midpoint: touchMidpoint(first, second),
-        camera: cameraRef.current,
-      };
-      movedRef.current = true;
-      dragRef.current = null;
-      setDrag(null);
-    }
-  };
-  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const previous = pointersRef.current.get(event.pointerId);
-    if (!previous) return;
-    pointersRef.current.set(event.pointerId, {
-      x: event.clientX,
-      y: event.clientY,
-    });
-    if (pointersRef.current.size >= 2) {
-      const [first, second] = Array.from(pointersRef.current.values());
-      const pinch = pinchRef.current;
-      if (!pinch) return;
-      const distance = Math.max(1, touchDistance(first, second));
-      const midpoint = touchMidpoint(first, second);
-      const rect = event.currentTarget.getBoundingClientRect();
-      const midpointX = midpoint.x - rect.left;
-      const midpointY = midpoint.y - rect.top;
-      const startMidpointX = pinch.midpoint.x - rect.left;
-      const startMidpointY = pinch.midpoint.y - rect.top;
-      const startCamera = pinch.camera;
-      const nextK = clamp(
-        startCamera.k * (distance / Math.max(1, pinch.distance)),
-        MIN_ZOOM,
-        MAX_ZOOM
-      );
-      const worldX =
-        (startMidpointX - startCamera.x) / startCamera.k + size.width / 2;
-      const worldY =
-        (startMidpointY - startCamera.y) / startCamera.k + size.height / 2;
-      applyCamera({
-        k: nextK,
-        x: midpointX - (worldX - size.width / 2) * nextK,
-        y: midpointY - (worldY - size.height / 2) * nextK,
-      });
-      movedRef.current = true;
-      return;
-    }
-    const activeDrag = dragRef.current;
-    if (!activeDrag || activeDrag.pointer !== event.pointerId) return;
-    const dx = event.clientX - previous.x;
-    const dy = event.clientY - previous.y;
-    if (Math.abs(dx) + Math.abs(dy) > 4) movedRef.current = true;
-    const current = cameraRef.current;
-    applyCamera({ ...current, x: current.x + dx, y: current.y + dy });
-    dragRef.current = {
-      pointer: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-    };
-  };
-  const pickSemanticEntity = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const scenePoint: [number, number] = [
-      (event.clientX - rect.left - camera.x) / camera.k + size.width / 2,
-      (event.clientY - rect.top - camera.y) / camera.k + size.height / 2,
-    ];
-    const geographicPoint = projection.invert?.(scenePoint);
-    if (!geographicPoint) return false;
-    if (showIndiaLocalities) {
-      const hitRadius = 18 / camera.k;
-      const nearest = visibleIndiaLocalities
-        .map(item => ({
-          item,
-          distance: Math.hypot(item.x - scenePoint[0], item.y - scenePoint[1]),
-        }))
-        .sort((a, b) => a.distance - b.distance)[0];
-      if (nearest && nearest.distance <= hitRadius && indiaGeography) {
-        const { item } = nearest;
-        const [longitude, latitude] = [
-          item.record.longitude,
-          item.record.latitude,
-        ];
-        const parentDistrict = indiaAdm2Features.find(boundary =>
-          geoContains(boundaryToFeature(boundary), [longitude, latitude])
-        );
-        selectGeoEntity(
-          "locality",
-          item.record.id,
-          item.record.name,
-          { x: item.x, y: item.y },
-          indiaGeography.layers.localities.source,
-          parentDistrict?.id ??
-            item.record.admin2Code ??
-            item.record.admin1Code ??
-            INDIA_ID,
-          {
-            population: item.record.population,
-            featureCode: item.record.featureCode,
-          }
-        );
-        return true;
-      }
-    }
-    if (showIndiaAdm2 && indiaGeography) {
-      const district = visibleIndiaAdm2.find(item =>
-        geoContains(boundaryToFeature(item.boundary), geographicPoint)
-      );
-      if (district) {
-        selectGeoEntity(
-          "adm2",
-          district.boundary.id,
-          district.boundary.name,
-          { x: district.x, y: district.y },
-          indiaGeography.layers.adm2.source,
-          indiaAdm2ParentById.get(district.boundary.id) ?? INDIA_ID
-        );
-        return true;
-      }
-    }
-    if (showIndiaAdm1 && indiaGeography) {
-      const state = indiaAdm1Render.find(item =>
-        geoContains(boundaryToFeature(item.boundary), geographicPoint)
-      );
-      if (state) {
-        selectGeoEntity(
-          "adm1",
-          state.boundary.id,
-          state.boundary.name,
-          { x: state.x, y: state.y },
-          indiaGeography.layers.adm1.source,
-          INDIA_ID
-        );
-        return true;
-      }
-    }
-    return false;
-  };
-  const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const pointer = pointersRef.current.get(event.pointerId);
-    pointersRef.current.delete(event.pointerId);
-    if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (dragRef.current?.pointer === event.pointerId) {
-      dragRef.current = null;
-      setDrag(null);
-    }
-    if (pointersRef.current.size === 1 && movedRef.current) {
-      const [remainingPointer, remainingPoint] = Array.from(
-        pointersRef.current.entries()
-      )[0];
-      dragRef.current = {
-        pointer: remainingPointer,
-        x: remainingPoint.x,
-        y: remainingPoint.y,
-      };
-      setDrag(dragRef.current);
-    }
-    if (movedRef.current) {
-      if (pointersRef.current.size === 0) commitCamera();
-      return;
-    }
-    if (!pointer || pointersRef.current.size > 0) return;
-    const now = performance.now();
-    const lastTap = lastTapRef.current;
-    const isDoubleTap =
-      lastTap &&
-      now - lastTap.time < 320 &&
-      Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 32;
-    if (isDoubleTap) {
-      const rect = event.currentTarget.getBoundingClientRect();
-      zoomAt(event.clientX - rect.left, event.clientY - rect.top, 1.8, true);
-      suppressClickUntilRef.current = now + 260;
-      lastTapRef.current = null;
-    } else {
-      if (pickSemanticEntity(event)) {
-        suppressClickUntilRef.current = now + 260;
-        lastTapRef.current = null;
-        return;
-      }
-      lastTapRef.current = { time: now, x: event.clientX, y: event.clientY };
-    }
-  };
-  const onPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
-    pointersRef.current.delete(event.pointerId);
-    pinchRef.current = null;
-    if (pointersRef.current.size === 0) {
-      dragRef.current = null;
-      setDrag(null);
-      if (movedRef.current) commitCamera();
-      return;
-    }
-    const [remainingPointer, remainingPoint] = Array.from(
-      pointersRef.current.entries()
-    )[0];
-    dragRef.current = {
-      pointer: remainingPointer,
-      x: remainingPoint.x,
-      y: remainingPoint.y,
-    };
-    setDrag(dragRef.current);
-  };
-  const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (overlayTarget(event.target)) return;
-    event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
-    zoomAt(
-      event.clientX - rect.left,
-      event.clientY - rect.top,
-      Math.exp(-event.deltaY * 0.0015),
-      false
-    );
-    if (wheelCommitRef.current !== null)
-      window.clearTimeout(wheelCommitRef.current);
-    wheelCommitRef.current = window.setTimeout(() => {
-      wheelCommitRef.current = null;
-      commitCamera();
-    }, 140);
-  };
   const indiaDetailActive = camera.k >= 1.45 && indiaInView;
   const indiaDetailLoading =
     indiaDetailActive && (indiaManifestLoading || indiaTilePendingCount > 0);
@@ -1565,6 +1114,7 @@ export default function WorldMapExplorer() {
       id: item.boundary.id,
       name: item.boundary.name,
       d: item.d,
+      geometry: item.boundary.geometry,
       x: item.x,
       y: item.y,
       kind: "adm1",
@@ -1591,6 +1141,7 @@ export default function WorldMapExplorer() {
       id: item.boundary.id,
       name: item.boundary.name,
       d: item.d,
+      geometry: item.boundary.geometry,
       x: item.x,
       y: item.y,
       kind: "adm2",
@@ -1629,8 +1180,69 @@ export default function WorldMapExplorer() {
     showIndiaLocalities,
     visibleIndiaLocalities,
   ]);
-  const worldDevicePixelRatio =
-    typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
+  const countryLayers = useMemo(() => {
+    const palette = ["#1f5f75", "#2b7d78", "#426c9a", "#7a5c8f", "#956b45", "#3d7b91"];
+    return countryFeatures.flatMap((country, index) => {
+      const id = topologyId(country);
+      const node = nodeById.get(id);
+      if (!node) return [];
+      return [{
+        id,
+        name: node.name,
+        feature: country as GeoJSON.Feature,
+        color: palette[index % palette.length],
+        visible: !nearbyMode || nearbyIds.has(id),
+        label: countryLabelIds.has(id),
+        selected: selectedId === id,
+      }];
+    });
+  }, [countryFeatures, countryLabelIds, nearbyIds, nearbyMode, nodeById, selectedId]);
+  const adm1Layers = useMemo(() => semanticAdm1.flatMap(item => item.geometry ? [{
+    id: item.id,
+    name: item.name,
+    geometry: item.geometry,
+    label: item.label,
+    selected: item.selected,
+  }] : []), [semanticAdm1]);
+  const adm2Layers = useMemo(() => semanticAdm2.flatMap(item => item.geometry ? [{
+    id: item.id,
+    name: item.name,
+    geometry: item.geometry,
+    label: item.label,
+    selected: item.selected,
+  }] : []), [semanticAdm2]);
+  const localityLayers = useMemo(() => visibleIndiaLocalities.map(item => ({
+    id: item.record.id,
+    name: item.record.name,
+    longitude: item.record.longitude,
+    latitude: item.record.latitude,
+    population: item.record.population,
+    label: indiaLocalityLabelIds.has(item.record.id),
+    selected: geoSelection?.kind === "locality" && geoSelection.id === item.record.id,
+  })), [geoSelection, indiaLocalityLabelIds, visibleIndiaLocalities]);
+  const onMapPick = (pick: { kind: "country" | "adm1" | "adm2" | "locality"; id: string }) => {
+    if (pick.kind === "country") {
+      const node = nodeById.get(pick.id);
+      if (node) focusNode(node, Math.max(2.2, cameraRef.current.k));
+      return;
+    }
+    if (!indiaGeography) return;
+    if (pick.kind === "adm1") {
+      const item = indiaAdm1Render.find(candidate => candidate.boundary.id === pick.id);
+      if (item) selectGeoEntity("adm1", item.boundary.id, item.boundary.name, { x: item.x, y: item.y }, indiaGeography.layers.adm1.source, INDIA_ID);
+      return;
+    }
+    if (pick.kind === "adm2") {
+      const item = visibleIndiaAdm2.find(candidate => candidate.boundary.id === pick.id);
+      if (item) selectGeoEntity("adm2", item.boundary.id, item.boundary.name, { x: item.x, y: item.y }, indiaGeography.layers.adm2.source, indiaAdm2ParentById.get(item.boundary.id) ?? INDIA_ID);
+      return;
+    }
+    const item = visibleIndiaLocalities.find(candidate => candidate.record.id === pick.id);
+    if (item) {
+      const parentDistrict = indiaAdm2Features.find(boundary => geoContains(boundaryToFeature(boundary), [item.record.longitude, item.record.latitude]));
+      selectGeoEntity("locality", item.record.id, item.record.name, { x: item.x, y: item.y }, indiaGeography.layers.localities.source, parentDistrict?.id ?? item.record.admin2Code ?? item.record.admin1Code ?? INDIA_ID, { population: item.record.population, featureCode: item.record.featureCode });
+    }
+  };
   if (error)
     return (
       <div className="grid min-h-[calc(100vh-68px)] place-items-center bg-[#08111d] p-6 text-center text-white">
@@ -1658,128 +1270,27 @@ export default function WorldMapExplorer() {
   return (
     <section
       ref={surfaceRef}
-      className={`relative h-[calc(100dvh-112px)] min-h-[520px] touch-none overflow-hidden sm:h-[calc(100dvh-68px)] sm:min-h-[560px] bg-[#08111d] text-white select-none ${drag ? "cursor-grabbing" : "cursor-grab"}`}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerCancel}
-      onWheel={onWheel}
+      className="relative h-[calc(100dvh-112px)] min-h-[520px] overflow-hidden bg-[#061423] text-white select-none sm:h-[calc(100dvh-68px)] sm:min-h-[560px]"
     >
       <div
-        ref={sceneRef}
-        className="absolute left-0 top-0 h-full w-full will-change-transform"
+        className="absolute inset-0 h-full w-full"
         style={{
-          backgroundColor: "#08111d",
+          backgroundColor: "#061423",
           backgroundImage:
             "linear-gradient(rgba(41,68,94,.18) 1px, transparent 1px), linear-gradient(90deg, rgba(41,68,94,.18) 1px, transparent 1px)",
           backgroundSize: "42px 42px",
         }}
       >
-        <svg
-          className="absolute left-0 top-0 h-full w-full touch-none"
-          role="img"
-          aria-label="Interactive source-backed world map"
-          viewBox={`0 0 ${size.width} ${size.height}`}
-        >
-          <defs>
-            <filter
-              id="atlas-world-glow"
-              x="-100%"
-              y="-100%"
-              width="300%"
-              height="300%"
-            >
-              <feGaussianBlur stdDeviation="3" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          </defs>
-          <g>
-            <path
-              d={worldPath}
-              fill="#0c1c2d"
-              stroke="#29445e"
-              strokeWidth={1.2 / camera.k}
-            />
-            {countryPaths.map(({ country, id, key, d }) => {
-              const node = nodeById.get(id);
-              const visible = !nearbyMode || nearbyIds.has(id);
-              const isSelected = selectedId === id;
-              return (
-                <path
-                  key={key}
-                  d={d}
-                  fill={
-                    isSelected ? "#263c5c" : visible ? "#10263a" : "#0a1624"
-                  }
-                  fillOpacity={isSelected ? 0.95 : visible ? 0.72 : 0.18}
-                  stroke={
-                    isSelected ? "#ffbf69" : visible ? "#2c4b66" : "#16293c"
-                  }
-                  strokeWidth={(isSelected ? 2 : 0.7) / camera.k}
-                  className="transition-[fill,stroke] duration-150"
-                  onPointerEnter={() => node && setHovered({ id })}
-                  onPointerLeave={() => setHovered(null)}
-                  onClick={event => {
-                    event.stopPropagation();
-                    if (
-                      !movedRef.current &&
-                      performance.now() >= suppressClickUntilRef.current &&
-                      node
-                    )
-                      focusNode(node, Math.max(2.2, camera.k));
-                  }}
-                >
-                  <title>
-                    {node?.name ?? country.properties?.name ?? "Country"}
-                  </title>
-                </path>
-              );
-            })}
-            {countryLabelIds.size > 0 &&
-              nodes.map(node => {
-                if (!countryLabelIds.has(node.id)) return null;
-                const labelSize =
-                  clamp(16 + Math.log2(Math.max(1, camera.k)) * 5, 16, 34) /
-                  camera.k;
-                return (
-                  <text
-                    key={`country-label-${node.id}`}
-                    x={node.x}
-                    y={node.y}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    fontSize={labelSize}
-                    fontWeight={700}
-                    fill="#c5e8e1"
-                    opacity={clamp(
-                      1.1 - Math.max(0, camera.k - 1) * 0.42,
-                      0.12,
-                      1
-                    )}
-                    pointerEvents="none"
-                    style={{
-                      paintOrder: "stroke",
-                      stroke: "#08111d",
-                      strokeWidth: 3 / camera.k,
-                    }}
-                  >
-                    {shortText(node.name, 20)}
-                  </text>
-                );
-              })}
-          </g>
-        </svg>
-        <WorldSemanticCanvas
-          cameraK={camera.k}
-          width={size.width}
-          height={size.height}
-          dpr={worldDevicePixelRatio}
-          adm1={semanticAdm1}
-          adm2={semanticAdm2}
-          localities={semanticLocalities}
+        <MapLibreWorldScene
+          ref={mapSceneRef}
+          initialView={initialMapView}
+          countries={countryLayers}
+          adm1={adm1Layers}
+          adm2={adm2Layers}
+          localities={localityLayers}
+          onViewChange={onMapViewChange}
+          onPick={onMapPick}
+          onUnavailable={() => setError("Map renderer unavailable")}
         />
       </div>
 
@@ -1894,36 +1405,6 @@ export default function WorldMapExplorer() {
           )}
         </div>
       </aside>
-
-      {hoveredNode && (
-        <div
-          data-world-overlay
-          className="pointer-events-none absolute z-30 hidden min-w-[176px] rounded-lg border border-[#3b5a76] bg-[#08111d]/96 px-3 py-2 shadow-xl backdrop-blur sm:block"
-          style={{
-            left: Math.min(
-              size.width - 210,
-              Math.max(
-                12,
-                camera.x + (hoveredNode.x - size.width / 2) * camera.k + 16
-              )
-            ),
-            top: Math.min(
-              size.height - 92,
-              Math.max(
-                82,
-                camera.y + (hoveredNode.y - size.height / 2) * camera.k - 72
-              )
-            ),
-          }}
-        >
-          <div className="font-semibold text-[#e6f3f2]">{hoveredNode.name}</div>
-          <div className="mt-1 font-mono text-[9px] uppercase tracking-[.12em] text-[#7f9ab1]">
-            {hoveredNode.total != null
-              ? `${formatNumber(hoveredNode.total)} LEI records`
-              : "No current record"}
-          </div>
-        </div>
-      )}
 
       <div
         data-world-overlay
@@ -2067,7 +1548,7 @@ export default function WorldMapExplorer() {
             </span>
             <button
               type="button"
-              onClick={() => setGeoSelection(null)}
+              onClick={closeInspector}
               className="rounded-md p-1.5 text-[#8da4b8] hover:bg-[#122b40] hover:text-white"
               aria-label="Close geographic inspector"
             >
@@ -2140,7 +1621,7 @@ export default function WorldMapExplorer() {
               </button>
               <button
                 type="button"
-                onClick={() => setGeoSelection(null)}
+                onClick={closeInspector}
                 className="flex items-center gap-2 rounded-xl px-4 py-3 text-left text-xs text-[#9cb1c3] hover:bg-[#122b40] hover:text-white"
               >
                 <X className="h-4 w-4" /> Close inspector
@@ -2171,10 +1652,7 @@ export default function WorldMapExplorer() {
             </span>
             <button
               type="button"
-              onClick={() => {
-                setSelectedId(null);
-                setGeoSelection(null);
-              }}
+              onClick={closeInspector}
               className="rounded-md p-1.5 text-[#8da4b8] hover:bg-[#122b40] hover:text-white"
               aria-label="Close country inspector"
             >

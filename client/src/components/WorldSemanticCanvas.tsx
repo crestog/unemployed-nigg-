@@ -4,6 +4,7 @@ export type SemanticBoundary = {
   id: string;
   name: string;
   d: string;
+  geometry?: GeoJSON.Geometry;
   x: number;
   y: number;
   kind: "adm1" | "adm2";

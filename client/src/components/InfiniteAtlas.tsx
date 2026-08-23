@@ -497,8 +497,6 @@ export default function InfiniteAtlas({
   const restoredHash = useRef(false);
   const cameraRef = useRef<Camera>({ x: WORLD_CX, y: WORLD_CY, k: 0.22 });
   const paintedCameraRef = useRef<Camera | null>(null);
-  const queuedCameraRef = useRef<Camera | null>(null);
-  const cameraFrameRef = useRef<number | null>(null);
   const pointersRef = useRef(new Map<number, { x: number; y: number }>());
   const pinchRef = useRef<{
     distance: number;
@@ -511,6 +509,7 @@ export default function InfiniteAtlas({
     y: number;
     moved: boolean;
   } | null>(null);
+  const liveGestureRef = useRef(false);
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(
     null
   );
@@ -563,25 +562,15 @@ export default function InfiniteAtlas({
   };
   const queueCamera = (next: Camera) => {
     cameraRef.current = next;
-    queuedCameraRef.current = next;
-    if (cameraFrameRef.current !== null) return;
-    cameraFrameRef.current = window.requestAnimationFrame(() => {
-      cameraFrameRef.current = null;
-      const queued = queuedCameraRef.current;
-      if (queued) applyCanvasCamera(queued);
-    });
+    // Match the reference scene: camera motion is an imperative write to the
+    // already-painted surface. React redraw and semantic LOD work wait for
+    // pointer-up or the wheel idle boundary.
+    applyCanvasCamera(next);
   };
   const commitCamera = () => setCamera(cameraRef.current);
   useEffect(() => {
     cameraRef.current = camera;
   }, [camera]);
-  useEffect(
-    () => () => {
-      if (cameraFrameRef.current !== null)
-        window.cancelAnimationFrame(cameraFrameRef.current);
-    },
-    []
-  );
 
   const currentOccupation = data.occupations.find(
     item => item.id === selectedOccupationId
@@ -824,10 +813,12 @@ export default function InfiniteAtlas({
     const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     canvas.width = Math.floor(size.width * dpr);
     canvas.height = Math.floor(size.height * dpr);
-    canvas.style.transform = "none";
-    canvas.style.transformOrigin = "50% 50%";
+    if (!liveGestureRef.current) {
+      canvas.style.transform = "none";
+      canvas.style.transformOrigin = "50% 50%";
+      paintedCameraRef.current = camera;
+    }
     canvas.style.willChange = "transform";
-    paintedCameraRef.current = camera;
     canvas.style.width = `${size.width}px`;
     canvas.style.height = `${size.height}px`;
     const context = canvas.getContext("2d");
@@ -1115,6 +1106,7 @@ export default function InfiniteAtlas({
     };
     if (immediate) {
       cameraRef.current = next;
+      applyCanvasCamera(next);
       setCamera(next);
     } else queueCamera(next);
   };
@@ -1305,6 +1297,7 @@ export default function InfiniteAtlas({
       return;
     }
     if (pointersRef.current.size === 1) {
+      liveGestureRef.current = true;
       const nextDrag = {
         pointer: event.pointerId,
         x: event.clientX,
@@ -1314,6 +1307,7 @@ export default function InfiniteAtlas({
       dragRef.current = nextDrag;
       setDrag(nextDrag);
     } else if (pointersRef.current.size === 2) {
+      liveGestureRef.current = true;
       const [first, second] = Array.from(pointersRef.current.values());
       pinchRef.current = {
         distance: Math.max(
@@ -1428,14 +1422,22 @@ export default function InfiniteAtlas({
       );
       pointersRef.current.delete(event.pointerId);
       setLasso(null);
+      liveGestureRef.current = false;
       return;
     }
     const activeDrag = dragRef.current;
     pointersRef.current.delete(event.pointerId);
     if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (activeDrag?.pointer !== event.pointerId) return;
+    if (activeDrag?.pointer !== event.pointerId) {
+      if (pointersRef.current.size === 0) {
+        liveGestureRef.current = false;
+        commitCamera();
+      }
+      return;
+    }
     dragRef.current = null;
     setDrag(null);
+    liveGestureRef.current = false;
     if (activeDrag.moved) {
       commitCamera();
       return;
@@ -1447,7 +1449,7 @@ export default function InfiniteAtlas({
       now - lastTap.time < 320 &&
       Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 32;
     if (isDoubleTap) {
-      zoomAt(event.clientX, event.clientY, 1.55);
+      zoomAt(event.clientX, event.clientY, 1.55, true);
       lastTapRef.current = null;
       return;
     }
@@ -1459,6 +1461,7 @@ export default function InfiniteAtlas({
     pointersRef.current.delete(event.pointerId);
     pinchRef.current = null;
     dragRef.current = null;
+    liveGestureRef.current = false;
     setDrag(null);
     setLasso(null);
     commitCamera();
@@ -1509,6 +1512,7 @@ export default function InfiniteAtlas({
       <canvas
         ref={canvasRef}
         className="absolute inset-0 h-full w-full"
+        style={{ willChange: "transform", transformOrigin: "50% 50%" }}
         aria-label="Interactive industry and occupation atlas"
       />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,transparent_0%,rgba(251,250,248,.06)_60%,rgba(251,250,248,.72)_100%)]" />

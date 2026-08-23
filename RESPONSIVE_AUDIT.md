@@ -99,3 +99,12 @@ The optimized motion and visual-scaling code has been pushed as commit `829fac4`
 ## Final production touch test
 
 On the newly deployed Worker, a one-finger touch pan changes the World SVG transform from `translate(640 380) scale(1)` to `translate(690 415) scale(1)` after the animation-frame settle. This confirms the imperative smooth-motion path is present in production, not only in the local development server.
+
+
+## 2026-08-23 — Reference-loop verification and compositor-first motion
+
+The public Map of Reddit implementation was verified from its actual source, not inferred from screenshots. `createStreamingSVGRenderer.js` creates a persistent `w-gl` scene with separate GPU collections for boundaries, points, links, and text. `createPointerEventsHandler.js` uses an RBush spatial index and nearest-neighbor picking, while `w-gl`'s `createMapControls.ts` applies pan/pinch camera math and calls `scene.renderFrame()`. `createScene.ts` coalesces GPU paints with `requestAnimationFrame`; the key property is that the camera and scene own motion, not a React component tree.
+
+Atlas remains Atlas-owned and does not copy Reddit content or branding. The World surface is still a React/SVG semantic scene and the Graph surface is still a Canvas semantic scene, but both now have a compositor-first motion boundary. World writes a synchronous transform to the already-painted SVG during gestures and reconciles camera-dependent semantic SVG state only at commit. Graph writes the canvas transform synchronously during gestures; its Canvas paint effect is guarded so a React rerender cannot erase that live transform, and semantic redraw waits for pointer-up or the wheel-idle boundary. Both surfaces mark their motion layer with `will-change: transform`.
+
+Local browser measurements with synthetic pointer events after hydration showed the live write completing in approximately 1.4 ms on World and 0.7 ms on Graph. World’s transform remained present after 20 ms (`translate(317.6px, 180.12px) scale(0.48)` in the tested gesture); Graph’s remained present after 20 ms (`translate(80px, 40px) scale(1)`). These are input-to-style-write checks, not claims of end-to-end hardware frame latency. The next architectural step for true Map-of-Reddit-scale growth is a persistent Canvas/WebGL scene with spatial indexing and source-backed geographic LOD, rather than adding more dynamic React SVG nodes.

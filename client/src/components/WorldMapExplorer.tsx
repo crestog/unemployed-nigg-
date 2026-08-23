@@ -134,9 +134,9 @@ export default function WorldMapExplorer() {
   );
   const suppressClickUntilRef = useRef(0);
   const cameraRef = useRef<Camera>({ x: 640, y: 380, k: 1 });
-  const queuedCameraRef = useRef<Camera | null>(null);
-  const cameraFrameRef = useRef<number | null>(null);
+  const paintedCameraRef = useRef<Camera>({ x: 640, y: 380, k: 1 });
   const wheelCommitRef = useRef<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const mapGroupRef = useRef<SVGGElement>(null);
   const dragRef = useRef<{ pointer: number; x: number; y: number } | null>(
     null
@@ -156,38 +156,42 @@ export default function WorldMapExplorer() {
   } | null>(null);
   const [nearbyMode, setNearbyMode] = useState(false);
 
+  const writeCommittedCamera = (next: Camera) => {
+    if (!mapGroupRef.current) return;
+    mapGroupRef.current.setAttribute(
+      "transform",
+      `translate(${next.x} ${next.y}) scale(${next.k}) translate(${-size.width / 2} ${-size.height / 2})`
+    );
+  };
+  const writeLiveCamera = (next: Camera) => {
+    const svg = svgRef.current;
+    const base = paintedCameraRef.current;
+    if (!svg || !base) return;
+    const scale = next.k / base.k;
+    const translateX = next.x - base.x * scale;
+    const translateY = next.y - base.y * scale;
+    svg.style.transformOrigin = "0 0";
+    svg.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+  };
   const applyCamera = (next: Camera, commit = false) => {
     cameraRef.current = next;
-    queuedCameraRef.current = next;
-    if (cameraFrameRef.current === null) {
-      cameraFrameRef.current = window.requestAnimationFrame(() => {
-        cameraFrameRef.current = null;
-        const queued = queuedCameraRef.current;
-        if (!queued || !mapGroupRef.current) return;
-        mapGroupRef.current.setAttribute(
-          "transform",
-          `translate(${queued.x} ${queued.y}) scale(${queued.k}) translate(${-size.width / 2} ${-size.height / 2})`
-        );
-      });
-    }
+    // This write is deliberately synchronous. It is a compositor-only
+    // transform of the already-painted scene; React and SVG LOD work wait
+    // until the gesture commits, matching the reference scene architecture.
+    writeLiveCamera(next);
     if (commit) setCamera(next);
   };
   const commitCamera = () => setCamera(cameraRef.current);
 
   useEffect(() => {
     cameraRef.current = camera;
-    if (mapGroupRef.current) {
-      mapGroupRef.current.setAttribute(
-        "transform",
-        `translate(${camera.x} ${camera.y}) scale(${camera.k}) translate(${-size.width / 2} ${-size.height / 2})`
-      );
-    }
+    paintedCameraRef.current = camera;
+    writeCommittedCamera(camera);
+    if (svgRef.current) svgRef.current.style.transform = "none";
   }, [camera, size.height, size.width]);
 
   useEffect(
     () => () => {
-      if (cameraFrameRef.current !== null)
-        window.cancelAnimationFrame(cameraFrameRef.current);
       if (wheelCommitRef.current !== null)
         window.clearTimeout(wheelCommitRef.current);
     },
@@ -638,7 +642,9 @@ export default function WorldMapExplorer() {
       onWheel={onWheel}
     >
       <svg
+        ref={svgRef}
         className="absolute inset-0 h-full w-full touch-none"
+        style={{ willChange: "transform", transformOrigin: "0 0" }}
         role="img"
         aria-label="Interactive source-backed world map"
         viewBox={`0 0 ${size.width} ${size.height}`}

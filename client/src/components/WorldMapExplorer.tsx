@@ -691,6 +691,7 @@ export default function WorldMapExplorer() {
       }),
     [indiaLocalityRecords, projection]
   );
+  const mapZoom = mapView?.zoom ?? 0;
   const indiaInView = useMemo(() => {
     if (!mapView) return false;
     const angularDistance = geoDistance(mapView.center, [79, 23]) * (180 / Math.PI);
@@ -707,7 +708,7 @@ export default function WorldMapExplorer() {
   }, [mapView]);
   const viewportGeoBounds = mapView?.bounds ?? null;
   useEffect(() => {
-    if (!indiaNode || camera.k < 1.45 || !indiaInView) return;
+    if (!indiaNode || mapZoom < INDIA_ADM1_ZOOM || !indiaInView) return;
     if (!indiaTileManifest && !indiaManifestRequestedRef.current) {
       indiaManifestRequestedRef.current = true;
       setIndiaManifestLoading(true);
@@ -726,17 +727,17 @@ export default function WorldMapExplorer() {
     }
     if (!indiaTileManifest || !viewportGeoBounds) return;
     const requests: ["adm1" | "adm2" | "localities", string][] = [];
-    if (camera.k >= INDIA_ADM1_ZOOM)
+    if (mapZoom >= INDIA_ADM1_ZOOM)
       tileKeysForViewport(
         indiaTileManifest.layers.adm1,
         viewportGeoBounds
       ).forEach(key => requests.push(["adm1", key]));
-    if (camera.k >= 4.6)
+    if (mapZoom >= INDIA_ADM2_ZOOM)
       tileKeysForViewport(
         indiaTileManifest.layers.adm2,
         viewportGeoBounds
       ).forEach(key => requests.push(["adm2", key]));
-    if (camera.k >= 8.2)
+    if (mapZoom >= INDIA_LOCALITY_ZOOM)
       tileKeysForViewport(
         indiaTileManifest.layers.localities,
         viewportGeoBounds
@@ -780,6 +781,7 @@ export default function WorldMapExplorer() {
   }, [
     camera,
     indiaInView,
+    mapZoom,
     indiaNode,
     indiaTileManifest,
     indiaTileRetryNonce,
@@ -1169,13 +1171,13 @@ export default function WorldMapExplorer() {
     }
   };
 
-  const indiaDetailActive = camera.k >= 1.45 && indiaInView;
+  const indiaDetailActive = mapZoom >= INDIA_ADM1_ZOOM && indiaInView;
   const indiaDetailLoading =
     indiaDetailActive && (indiaManifestLoading || indiaTilePendingCount > 0);
   const indiaDetailReady =
-    camera.k < 4.8
+    mapZoom < INDIA_ADM2_ZOOM
       ? indiaAdm1Features.length > 0
-      : camera.k < 8.2
+      : mapZoom < INDIA_LOCALITY_ZOOM
         ? indiaAdm1Features.length > 0 && indiaAdm2Features.length > 0
         : indiaLocalityRecords.length > 0;
   const indiaDetailWaiting =
@@ -1185,11 +1187,11 @@ export default function WorldMapExplorer() {
     !indiaGeoError;
   const indiaContextActive = selectedId === INDIA_ID || geoSelection?.scope === "india";
   const showIndiaHierarchy = Boolean(
-    indiaGeography && (indiaInView || indiaContextActive) && camera.k >= 1.85
+    indiaGeography && (indiaInView || indiaContextActive) && mapZoom >= INDIA_ADM1_ZOOM
   );
-  const showIndiaAdm1 = showIndiaHierarchy && camera.k >= 1.85;
-  const showIndiaAdm2 = showIndiaHierarchy && camera.k >= 4.8;
-  const showIndiaLocalities = showIndiaHierarchy && camera.k >= 8.9;
+  const showIndiaAdm1 = showIndiaHierarchy && mapZoom >= INDIA_ADM1_ZOOM;
+  const showIndiaAdm2 = showIndiaHierarchy && mapZoom >= INDIA_ADM2_ZOOM;
+  const showIndiaLocalities = showIndiaHierarchy && mapZoom >= INDIA_LOCALITY_ZOOM;
   const geoParentLabel = geoSelection?.parentId
     ? (indiaAdm1Features.find(item => item.id === geoSelection.parentId)
         ?.name ??
@@ -1199,11 +1201,11 @@ export default function WorldMapExplorer() {
   const estimatedMapZoom = 1.25 + Math.log2(Math.max(MIN_ZOOM, camera.k));
   const currentGeoLevel = geoSelection
     ? selectionKindLabel(geoSelection)
-    : indiaInView && camera.k >= INDIA_LOCALITY_ZOOM
+      : indiaInView && mapZoom >= INDIA_LOCALITY_ZOOM
       ? "City / locality"
-      : indiaInView && camera.k >= INDIA_ADM2_ZOOM
+      : indiaInView && mapZoom >= INDIA_ADM2_ZOOM
         ? "District"
-        : indiaInView && camera.k >= INDIA_ADM1_ZOOM
+        : indiaInView && mapZoom >= INDIA_ADM1_ZOOM
           ? "State / union territory"
           : estimatedMapZoom >= GLOBAL_ADM2_MAP_ZOOM
             ? "Global administrative level 2"

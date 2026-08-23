@@ -170,6 +170,7 @@ type GeographySource = {
 };
 type GeoEntityKind = "country" | "adm1" | "adm2" | "locality";
 type GeoSelection = {
+  scope: "global" | "india";
   kind: GeoEntityKind;
   id: string;
   name: string;
@@ -243,6 +244,8 @@ const INDIA_ID = "356";
 const INDIA_ADM1_ZOOM = 2.4;
 const INDIA_ADM2_ZOOM = 6.2;
 const INDIA_LOCALITY_ZOOM = 10.2;
+const GLOBAL_ADM1_MAP_ZOOM = 5;
+const GLOBAL_ADM2_MAP_ZOOM = 7.2;
 const longitudeToTileX = (longitude: number, zoom: number) =>
   clamp(Math.floor(((longitude + 180) / 360) * 2 ** zoom), 0, 2 ** zoom - 1);
 const latitudeToTileY = (latitude: number, zoom: number) => {
@@ -1017,6 +1020,7 @@ export default function WorldMapExplorer() {
     rememberSelectionCamera();
     setSelectedId(INDIA_ID);
     setGeoSelection({
+      scope: "india",
       kind,
       id,
       name,
@@ -1058,6 +1062,7 @@ export default function WorldMapExplorer() {
     rememberSelectionCamera();
     setSelectedId(null);
     setGeoSelection({
+      scope: "global",
       kind,
       id,
       name,
@@ -1088,7 +1093,13 @@ export default function WorldMapExplorer() {
     );
   };
   const goToGeoParent = () => {
-    if (!geoSelection || !indiaGeography) return;
+    if (!geoSelection) return;
+    if (geoSelection.scope === "global") {
+      setGeoSelection(null);
+      selectionCameraRef.current = null;
+      return;
+    }
+    if (!indiaGeography) return;
     if (geoSelection.kind === "adm1" || geoSelection.parentId === INDIA_ID) {
       setGeoSelection(null);
       if (indiaNode) focusNode(indiaNode, 3.8);
@@ -1172,15 +1183,20 @@ export default function WorldMapExplorer() {
       indiaAdm2Features.find(item => item.id === geoSelection.parentId)?.name ??
       null)
     : null;
+  const estimatedMapZoom = 1.25 + Math.log2(Math.max(MIN_ZOOM, camera.k));
   const currentGeoLevel = geoSelection
     ? geoKindLabel(geoSelection.kind)
-    : camera.k >= INDIA_LOCALITY_ZOOM
+    : indiaInView && camera.k >= INDIA_LOCALITY_ZOOM
       ? "City / locality"
-      : camera.k >= INDIA_ADM2_ZOOM
+      : indiaInView && camera.k >= INDIA_ADM2_ZOOM
         ? "District"
-        : camera.k >= INDIA_ADM1_ZOOM
+        : indiaInView && camera.k >= INDIA_ADM1_ZOOM
           ? "State / union territory"
-          : "Country overview";
+          : estimatedMapZoom >= GLOBAL_ADM2_MAP_ZOOM
+            ? "Global administrative level 2"
+            : estimatedMapZoom >= GLOBAL_ADM1_MAP_ZOOM
+              ? "Global administrative level 1"
+              : "Country overview";
   const semanticAdm1 = useMemo<SemanticBoundary[]>(() => {
     if (!showIndiaAdm1) return [];
     return indiaAdm1Render.map(item => ({
@@ -1420,7 +1436,7 @@ export default function WorldMapExplorer() {
             <>
               <span className="text-[#526b84]">/</span>
               <span className="max-w-[210px] truncate font-mono text-[9px] uppercase tracking-[.14em] text-[#ffbf69]">
-                India / {geoSelection.name}
+                {geoSelection.scope === "india" ? "India / " : "Global / "}{geoSelection.name}
               </span>
             </>
           )}
@@ -1718,9 +1734,11 @@ export default function WorldMapExplorer() {
                 </div>
                 <div className="mt-1 text-sm text-[#b4c4d5]">
                   {geoParentLabel ??
-                    (geoSelection.parentId === INDIA_ID
+                    (geoSelection.scope === "india" && geoSelection.parentId === INDIA_ID
                       ? "India"
-                      : "Source code")}
+                      : geoSelection.scope === "global"
+                        ? "Global source release"
+                        : "Source code")}
                 </div>
               </div>
             </div>

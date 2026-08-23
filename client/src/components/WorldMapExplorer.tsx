@@ -14,6 +14,7 @@ import {
 } from "d3-geo";
 import worldTopology from "world-atlas/countries-50m.json";
 import { type SemanticBoundary, type SemanticLocality } from "@/lib/worldSemanticTypes";
+import type { GlobalMvtManifest } from "@/lib/worldMvt";
 import MapLibreWorldScene, {
   type MapLibreWorldSceneHandle,
 } from "./MapLibreWorldScene";
@@ -24,6 +25,7 @@ import {
   ExternalLink,
   LocateFixed,
   Map as MapIcon,
+  RotateCw,
   Search,
   X,
   ZoomIn,
@@ -197,6 +199,26 @@ const mapCollection = feature(
     .countries
 ) as unknown as GeoJSON.FeatureCollection<GeoJSON.Geometry, { name?: string }>;
 const countryFeatures = mapCollection.features as MapFeature[];
+const safeCountryLabelAnchor = (country: MapFeature): [number, number] | null => {
+  try {
+    const centroid = geoCentroid(country as GeoJSON.Feature);
+    if (centroid.every(Number.isFinite) && geoContains(country as GeoJSON.Feature, centroid)) {
+      return [centroid[0], centroid[1]];
+    }
+    const [[west, south], [east, north]] = geoBounds(country as GeoJSON.Feature);
+    const wrappedEast = east < west ? east + 360 : east;
+    const midpoint: [number, number] = [
+      ((((west + wrappedEast) / 2 + 540) % 360) - 180),
+      (south + north) / 2,
+    ];
+    if (midpoint.every(Number.isFinite) && geoContains(country as GeoJSON.Feature, midpoint)) {
+      return midpoint;
+    }
+    return centroid.every(Number.isFinite) ? [centroid[0], centroid[1]] : null;
+  } catch {
+    return null;
+  }
+};
 // Keep the interaction effectively unbounded while remaining inside CSS/IEEE-754
 // safety. The reference map reaches five-figure zoom values; this leaves room
 // for many more gestures without allowing non-finite transforms.
@@ -323,6 +345,7 @@ export default function WorldMapExplorer() {
   const indiaTileRetryTimersRef = useRef(new Map<string, number>());
   const indiaTileFailedRef = useRef(new Set<string>());
   const [release, setRelease] = useState<WorldRelease | null>(null);
+  const [globalMvtManifest, setGlobalMvtManifest] = useState<GlobalMvtManifest | null>(null);
   const [indiaTileManifest, setIndiaTileManifest] =
     useState<IndiaTileManifest | null>(null);
   const [indiaAdm1Features, setIndiaAdm1Features] = useState<IndiaBoundary[]>(
@@ -354,6 +377,8 @@ export default function WorldMapExplorer() {
   const [query, setQuery] = useState("");
   const [showResults, setShowResults] = useState(false);
   const [nearbyMode, setNearbyMode] = useState(false);
+  const [spinEnabled, setSpinEnabled] = useState(true);
+  const [reducedMotion, setReducedMotion] = useState(false);
   const initialMapView = useMemo<MapViewState | undefined>(() => {
     if (typeof window === "undefined") return undefined;
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -383,6 +408,28 @@ export default function WorldMapExplorer() {
       };
     }
     return undefined;
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/data/world-mvt/manifest.json", { cache: "force-cache" })
+      .then(response => response.ok ? response.json() as Promise<GlobalMvtManifest> : null)
+      .then(manifest => {
+        if (active && manifest?.format === "atlas-global-geoboundaries-mvt-v1") setGlobalMvtManifest(manifest);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => {
+      setReducedMotion(mediaQuery.matches);
+      if (mediaQuery.matches) setSpinEnabled(false);
+    };
+    update();
+    mediaQuery.addEventListener?.("change", update);
+    return () => mediaQuery.removeEventListener?.("change", update);
   }, []);
 
   useEffect(() => {
@@ -759,7 +806,6 @@ export default function WorldMapExplorer() {
         if (b.id === selectedId) return 1;
         return (b.total ?? -1) - (a.total ?? -1);
       })
-      .slice(0, camera.k < 1.35 ? 52 : 36)
       .forEach(node => labels.add(node.id));
     return labels;
   }, [camera.k, indiaAdm1Features.length, indiaInView, nodes, selectedId]);
@@ -1003,6 +1049,33 @@ export default function WorldMapExplorer() {
           })();
     focusGeoPoint(point, kind === "adm1" ? 4.1 : kind === "adm2" ? 7.2 : 12.5, center);
   };
+  const selectGlobalEntity = (
+    kind: "adm1" | "adm2",
+    id: string,
+    name: string,
+    feature?: GeoJSON.Feature
+  ) => {
+    rememberSelectionCamera();
+    setSelectedId(null);
+    setGeoSelection({
+      kind,
+      id,
+      name,
+      parentId: null,
+      source: {
+        publisher: globalMvtManifest?.source.publisher ?? "geoBoundaries / William & Mary geoLab",
+        sourceUrl: globalMvtManifest?.source.sourceUrl ?? "https://www.geoboundaries.org/globalDownloads.html",
+        license: globalMvtManifest?.source.license ?? "Attribution required",
+      },
+      description: kind === "adm1"
+        ? "Global administrative level 1 reference geometry from the geoBoundaries CGAZ composite."
+        : "Global administrative level 2 reference geometry from the geoBoundaries CGAZ composite.",
+      point: { x: 0, y: 0 },
+    });
+    setQuery("");
+    setShowResults(false);
+    if (feature) mapSceneRef.current?.focusFeature(feature, kind === "adm1" ? 4.8 : 7.2);
+  };
   const focusGeoResult = (result: GeoSearchResult) => {
     selectGeoEntity(
       result.kind,
@@ -1197,6 +1270,17 @@ export default function WorldMapExplorer() {
       }];
     });
   }, [countryFeatures, countryLabelIds, nearbyIds, nearbyMode, nodeById, selectedId]);
+  const countryLabelLayers = useMemo(() => countryLayers.flatMap(item => {
+    const anchor = safeCountryLabelAnchor(item.feature as MapFeature);
+    return anchor ? [{
+      id: item.id,
+      name: item.name,
+      longitude: anchor[0],
+      latitude: anchor[1],
+      label: item.label,
+      selected: item.selected,
+    }] : [];
+  }), [countryLayers]);
   const adm1Layers = useMemo(() => semanticAdm1.flatMap(item => item.geometry ? [{
     id: item.id,
     name: item.name,
@@ -1220,10 +1304,22 @@ export default function WorldMapExplorer() {
     label: indiaLocalityLabelIds.has(item.record.id),
     selected: geoSelection?.kind === "locality" && geoSelection.id === item.record.id,
   })), [geoSelection, indiaLocalityLabelIds, visibleIndiaLocalities]);
-  const onMapPick = (pick: { kind: "country" | "adm1" | "adm2" | "locality"; id: string }) => {
+  const onMapPick = (pick: { kind: "country" | "adm1" | "adm2" | "locality"; id: string; feature?: { source?: string; sourceLayer?: string; geometry?: GeoJSON.Geometry; properties?: Record<string, unknown> } }) => {
     if (pick.kind === "country") {
       const node = nodeById.get(pick.id);
       if (node) focusNode(node, Math.max(2.2, cameraRef.current.k));
+      return;
+    }
+    const sourceName = String(pick.feature?.source ?? "");
+    const sourceLayer = String(pick.feature?.sourceLayer ?? "");
+    if ((pick.kind === "adm1" || pick.kind === "adm2") && (sourceName.startsWith("atlas-global-") || sourceLayer === pick.kind)) {
+      const name = String(pick.feature?.properties?.name ?? `${pick.kind.toUpperCase()} ${pick.id}`);
+      selectGlobalEntity(pick.kind, pick.id, name, pick.feature?.geometry ? {
+        type: "Feature",
+        id: pick.id,
+        properties: pick.feature.properties ?? {},
+        geometry: pick.feature.geometry,
+      } as GeoJSON.Feature : undefined);
       return;
     }
     if (!indiaGeography) return;
@@ -1285,6 +1381,9 @@ export default function WorldMapExplorer() {
           ref={mapSceneRef}
           initialView={initialMapView}
           countries={countryLayers}
+          countryLabels={countryLabelLayers}
+          globalMvt={globalMvtManifest}
+          spinEnabled={spinEnabled && !reducedMotion}
           adm1={adm1Layers}
           adm2={adm2Layers}
           localities={localityLayers}
@@ -1376,11 +1475,33 @@ export default function WorldMapExplorer() {
           </span>
         </div>
         <p className="mt-3 text-sm leading-6 text-[#b4c4d5]">
-          Drag to roam. Zoom at the cursor. Country labels give way to India’s
-          sourced states, districts, and GeoNames place references as scale
-          increases. The global map stays country-level where subnational
-          coverage is unavailable.
+          Drag to roam. Zoom at the cursor. Country labels give way to
+          precomputed worldwide administrative boundaries, with India’s
+          specialized states, districts, and GeoNames place references at
+          deeper scale.
         </p>
+        <section className="mt-4 border border-[#294761] bg-[#0d2234]/80 p-3">
+          <div className="flex items-center justify-between gap-3 font-mono text-[9px] uppercase tracking-[.12em] text-[#8fe7d8]">
+            <span>Global reference layers</span>
+            <span className="text-[#d2dc96]">{globalMvtManifest ? "ready" : "loading"}</span>
+          </div>
+          {globalMvtManifest ? (
+            <>
+              <p className="mt-2 text-[11px] leading-5 text-[#b4c4d5]">
+                GeoBoundaries CGAZ static release <span className="font-mono text-[#e6f3f2]">{globalMvtManifest.releaseId}</span> supplies worldwide ADM1 and ADM2 reference geometry.
+              </p>
+              <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[9px] uppercase tracking-[.08em] text-[#8297ac]">
+                <span>{globalMvtManifest.layers.adm1.featureCount.toLocaleString()} ADM1</span>
+                <span>{globalMvtManifest.layers.adm2.featureCount.toLocaleString()} ADM2</span>
+              </div>
+              <p className="mt-2 text-[10px] leading-4 text-[#8297ac]">
+                Global localities are not included yet. <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
+              </p>
+            </>
+          ) : (
+            <p className="mt-2 text-[11px] leading-5 text-[#8297ac]">Fetching the small versioned tile manifest; map navigation remains static and viewport-loaded.</p>
+          )}
+        </section>
         <div className="mt-4 space-y-2 border-t border-[#203b54] pt-3 font-mono text-[9px] uppercase tracking-[.1em] text-[#8297ac]">
           <p>
             <span className="mr-2 text-[#45d7c0]">01</span>Search moves the
@@ -1511,6 +1632,17 @@ export default function WorldMapExplorer() {
       >
         <button
           type="button"
+          onClick={() => setSpinEnabled(current => !current)}
+          disabled={reducedMotion}
+          aria-pressed={spinEnabled && !reducedMotion}
+          title={reducedMotion ? "Automatic rotation is disabled by reduced-motion preference" : "Toggle automatic globe rotation"}
+          className={`flex h-10 items-center gap-2 rounded-xl border px-3 text-[9px] font-semibold uppercase tracking-[.1em] shadow-xl ${reducedMotion ? "cursor-not-allowed border-[#2b4054] bg-[#0b1a2a]/80 text-[#64798b]" : spinEnabled ? "border-[#45d7c0] bg-[#123b43]/95 text-[#8fe7d8]" : "border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] hover:border-[#45d7c0] hover:text-[#45d7c0]"}`}
+        >
+          <RotateCw className="h-4 w-4" />
+          <span>{reducedMotion ? "Reduced" : spinEnabled ? "Spin on" : "Spin off"}</span>
+        </button>
+        <button
+          type="button"
           onClick={() => zoomAt(size.width / 2, size.height / 2, 1.55)}
           className="grid h-10 w-10 place-items-center rounded-xl border border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] shadow-xl hover:border-[#45d7c0] hover:text-[#45d7c0]"
           aria-label="Zoom in"
@@ -1562,7 +1694,7 @@ export default function WorldMapExplorer() {
                 {geoKindLabel(geoSelection.kind)}
               </div>
               <span className="rounded-full bg-[#122b40] px-2 py-1 font-mono text-[8px] uppercase tracking-[.13em] text-[#a1b6c8]">
-                India source layer
+                {geoSelection.source.publisher}
               </span>
             </div>
             <h2 className="mt-4 font-display text-4xl leading-[.94] text-white">

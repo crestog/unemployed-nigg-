@@ -1,6 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { LngLatBounds, Map as MapLibreMapClass, setWorkerUrl } from "maplibre-gl";
 import type { GeoJSONSource, Map as MapLibreMap, MapGeoJSONFeature, StyleSpecification } from "maplibre-gl";
+import type { GlobalMvtManifest } from "@/lib/worldMvt";
+import { globalMvtTileUrl } from "@/lib/worldMvt";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 
@@ -18,6 +20,14 @@ type CountryRecord = {
   feature: Feature;
   color: string;
   visible: boolean;
+  label: boolean;
+  selected: boolean;
+};
+type CountryLabelRecord = {
+  id: string;
+  name: string;
+  longitude: number;
+  latitude: number;
   label: boolean;
   selected: boolean;
 };
@@ -51,9 +61,12 @@ export type MapLibreWorldSceneHandle = {
 type Props = {
   initialView?: ViewState;
   countries: CountryRecord[];
+  countryLabels: CountryLabelRecord[];
   adm1: BoundaryRecord[];
   adm2: BoundaryRecord[];
   localities: LocalityRecord[];
+  globalMvt?: GlobalMvtManifest | null;
+  spinEnabled?: boolean;
   onViewChange?: (view: ViewState & { bounds: [[number, number], [number, number]] }) => void;
   onPick?: (pick: { kind: PickKind; id: string; feature?: MapGeoJSONFeature }) => void;
   onUnavailable?: () => void;
@@ -78,6 +91,20 @@ function asCountryFeature(item: CountryRecord): Feature {
       name: item.name,
       color: item.color,
       visible: item.visible,
+      label: item.label,
+      selected: item.selected,
+    },
+  } as Feature;
+}
+
+function asCountryLabelFeature(item: CountryLabelRecord): Feature {
+  return {
+    type: "Feature",
+    id: item.id,
+    geometry: { type: "Point", coordinates: [item.longitude, item.latitude] },
+    properties: {
+      atlasId: item.id,
+      name: item.name,
       label: item.label,
       selected: item.selected,
     },
@@ -115,6 +142,7 @@ function asLocalityFeature(item: LocalityRecord): Feature {
 
 function atlasStyle(input: {
   countries: CountryRecord[];
+  countryLabels: CountryLabelRecord[];
   adm1: BoundaryRecord[];
   adm2: BoundaryRecord[];
   localities: LocalityRecord[];
@@ -123,8 +151,17 @@ function atlasStyle(input: {
     version: 8,
     name: "Atlas Earth",
     glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+    sky: {
+      "sky-color": "#020817",
+      "sky-horizon-blend": 0.22,
+      "horizon-color": "#17445f",
+      "horizon-fog-blend": 0.12,
+      "fog-color": "#061423",
+      "fog-ground-blend": 0.18,
+    },
     sources: {
       "atlas-countries": { type: "geojson", data: featureCollection(input.countries.map(asCountryFeature) as any) },
+      "atlas-country-labels": { type: "geojson", data: featureCollection(input.countryLabels.map(asCountryLabelFeature) as any) },
       "atlas-adm1": { type: "geojson", data: featureCollection(input.adm1.map(asBoundaryFeature) as any) },
       "atlas-adm2": { type: "geojson", data: featureCollection(input.adm2.map(asBoundaryFeature) as any) },
       "atlas-localities": { type: "geojson", data: featureCollection(input.localities.map(asLocalityFeature) as any), maxzoom: 14 },
@@ -154,12 +191,13 @@ function atlasStyle(input: {
       {
         id: "atlas-country-label",
         type: "symbol",
-        source: "atlas-countries",
+        source: "atlas-country-labels",
         minzoom: 0.8,
         maxzoom: 3.55,
         layout: {
           "symbol-placement": "point",
           "text-field": ["get", "name"],
+          "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 0, 1],
           "text-font": ["Open Sans Semibold"],
           "text-size": ["interpolate", ["linear"], ["zoom"], 0.8, 11, 2, 15, 3.55, 18],
           "text-max-width": 9,
@@ -167,6 +205,8 @@ function atlasStyle(input: {
           "text-allow-overlap": false,
           "text-ignore-placement": false,
           "text-anchor": "center",
+          "text-variable-anchor": ["center", "top", "bottom", "left", "right"],
+          "text-letter-spacing": 0.015,
         },
         paint: {
           "text-color": "#dbfff6",
@@ -297,8 +337,122 @@ function sourceSetData(map: MapLibreMap, sourceId: string, data: GeoJSON.Feature
   source?.setData(data);
 }
 
+function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
+  const adm1Source = "atlas-global-adm1";
+  const adm2Source = "atlas-global-adm2";
+  if (!map.getSource(adm1Source)) {
+    map.addSource(adm1Source, {
+      type: "vector",
+      tiles: [globalMvtTileUrl(manifest, "adm1")],
+      minzoom: manifest.layers.adm1.tileZoom,
+      maxzoom: manifest.layers.adm1.tileZoom,
+      promoteId: "atlasId",
+    });
+  }
+  if (!map.getSource(adm2Source)) {
+    map.addSource(adm2Source, {
+      type: "vector",
+      tiles: [globalMvtTileUrl(manifest, "adm2")],
+      minzoom: manifest.layers.adm2.tileZoom,
+      maxzoom: manifest.layers.adm2.tileZoom,
+      promoteId: "atlasId",
+    });
+  }
+  const insertBefore = "atlas-adm1-fill";
+  if (!map.getLayer("atlas-global-adm1-fill")) {
+    map.addLayer({
+      id: "atlas-global-adm1-fill",
+      type: "fill",
+      source: adm1Source,
+      "source-layer": "adm1",
+      minzoom: 5,
+      maxzoom: 7.4,
+      paint: {
+        "fill-color": "#4e8e9c",
+        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 2.35, 0.04, 3.4, 0.11, 7.4, 0.16],
+      },
+    }, insertBefore);
+    map.addLayer({
+      id: "atlas-global-adm1-line",
+      type: "line",
+      source: adm1Source,
+      "source-layer": "adm1",
+      minzoom: 5,
+      maxzoom: 7.4,
+      paint: {
+        "line-color": "#70c6bb",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 2.35, 0.25, 7.4, 1.05],
+        "line-opacity": 0.7,
+      },
+    }, insertBefore);
+    map.addLayer({
+      id: "atlas-global-adm1-label",
+      type: "symbol",
+      source: adm1Source,
+      "source-layer": "adm1",
+      minzoom: 5,
+      maxzoom: 7.5,
+      layout: {
+        "text-field": ["get", "name"],
+        "text-font": ["Open Sans Semibold"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 3.45, 8, 6.2, 12, 7.5, 15],
+        "text-max-width": 7,
+        "text-padding": 2,
+        "text-allow-overlap": false,
+        "text-ignore-placement": false,
+      },
+      paint: { "text-color": "#b6f1e2", "text-halo-color": "#061423", "text-halo-width": 1.1 },
+    }, insertBefore);
+  }
+  if (!map.getLayer("atlas-global-adm2-fill")) {
+    map.addLayer({
+      id: "atlas-global-adm2-fill",
+      type: "fill",
+      source: adm2Source,
+      "source-layer": "adm2",
+      minzoom: 7,
+      maxzoom: 12,
+      paint: {
+        "fill-color": "#ae8057",
+        "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5.4, 0.025, 7.8, 0.1, 12, 0.15],
+      },
+    }, insertBefore);
+    map.addLayer({
+      id: "atlas-global-adm2-line",
+      type: "line",
+      source: adm2Source,
+      "source-layer": "adm2",
+      minzoom: 7,
+      maxzoom: 12,
+      paint: {
+        "line-color": "#e1b477",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 5.4, 0.18, 12, 0.8],
+        "line-opacity": 0.62,
+      },
+    }, insertBefore);
+    map.addLayer({
+      id: "atlas-global-adm2-label",
+      type: "symbol",
+      source: adm2Source,
+      "source-layer": "adm2",
+      minzoom: 7.2,
+      maxzoom: 12,
+      layout: {
+        "text-field": ["get", "name"],
+        "text-font": ["Open Sans Semibold"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 7.2, 7, 10, 10, 12, 12],
+        "text-max-width": 6,
+        "text-padding": 2,
+        "text-allow-overlap": false,
+        "text-ignore-placement": false,
+      },
+      paint: { "text-color": "#f4d6a7", "text-halo-color": "#061423", "text-halo-width": 1 },
+    }, insertBefore);
+  }
+}
+
 const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function MapLibreWorldScene(
-  { initialView, countries, adm1, adm2, localities, onViewChange, onPick, onUnavailable },
+  { initialView, countries, countryLabels, adm1, adm2, localities, globalMvt, spinEnabled = true, onViewChange, onPick, onUnavailable },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -307,11 +461,14 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   const onViewChangeRef = useRef(onViewChange);
   const onPickRef = useRef(onPick);
   const onUnavailableRef = useRef(onUnavailable);
+  const spinEnabledRef = useRef(spinEnabled);
+  const reducedMotionRef = useRef(false);
   const [styleReady, setStyleReady] = useState(false);
   const [mapLoaded, setMapLoaded] = useState(false);
   onViewChangeRef.current = onViewChange;
   onPickRef.current = onPick;
   onUnavailableRef.current = onUnavailable;
+  spinEnabledRef.current = spinEnabled;
 
   useImperativeHandle(ref, () => ({
     setView(view) {
@@ -364,7 +521,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       setWorkerUrl(maplibreWorkerUrl);
       map = new MapLibreMapClass({
         container,
-        style: atlasStyle({ countries, adm1, adm2, localities }),
+        style: atlasStyle({ countries, countryLabels, adm1, adm2, localities }),
         center: initialView?.center ?? [0, 18],
         zoom: initialView?.zoom ?? 1.25,
         bearing: initialView?.bearing ?? 0,
@@ -394,7 +551,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         onViewChangeRef.current?.(toView(map));
       });
       map.on("move", () => onViewChangeRef.current?.(toView(map)));
-      const pickLayers = ["atlas-locality-circle", "atlas-adm2-fill", "atlas-adm1-fill", "atlas-country-fill"];
+      const pickLayers = ["atlas-locality-circle", "atlas-adm2-fill", "atlas-global-adm2-fill", "atlas-adm1-fill", "atlas-global-adm1-fill", "atlas-country-fill"];
       map.on("click", pickLayers, event => {
         const feature = event.features?.[0];
         const id = feature?.properties?.atlasId ?? feature?.id;
@@ -411,12 +568,40 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       return;
     }
 
-    const resizeObserver = new ResizeObserver(() => map.resize());
-    resizeObserver.observe(container);
+      const resizeObserver = new ResizeObserver(() => map.resize());
+      resizeObserver.observe(container);
+      const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+      reducedMotionRef.current = reducedMotionQuery.matches;
+      const updateReducedMotion = () => {
+        reducedMotionRef.current = reducedMotionQuery.matches;
+      };
+      reducedMotionQuery.addEventListener?.("change", updateReducedMotion);
+      let spinFrame = 0;
+      let previousSpinTime = performance.now();
+      let spinPausedUntil = performance.now() + 3000;
+      const pauseSpin = () => {
+        spinPausedUntil = performance.now() + 7000;
+      };
+      const spinEvents = ["dragstart", "zoomstart", "rotatestart", "wheel", "mousedown", "touchstart"] as const;
+      spinEvents.forEach(eventName => map.on(eventName, pauseSpin));
+      const spin = (now: number) => {
+        const elapsed = Math.min(80, now - previousSpinTime);
+        previousSpinTime = now;
+        if (spinEnabledRef.current && !reducedMotionRef.current && now >= spinPausedUntil && !map.isMoving() && map.getZoom() <= 3.2) {
+          const center = map.getCenter();
+          const longitude = ((((center.lng + elapsed * 0.0022) + 540) % 360) - 180);
+          map.setCenter([longitude, center.lat]);
+        }
+        spinFrame = window.requestAnimationFrame(spin);
+      };
+      spinFrame = window.requestAnimationFrame(spin);
 
-    return () => {
-      resizeObserver.disconnect();
-      setStyleReady(false);
+      return () => {
+        window.cancelAnimationFrame(spinFrame);
+        reducedMotionQuery.removeEventListener?.("change", updateReducedMotion);
+        spinEvents.forEach(eventName => map.off(eventName, pauseSpin));
+        resizeObserver.disconnect();
+        setStyleReady(false);
       setMapLoaded(false);
       mapRef.current = null;
       map.remove();
@@ -426,11 +611,13 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady || !mapLoaded) return;
+    if (globalMvt) addGlobalMvtLayers(map, globalMvt);
     sourceSetData(map, "atlas-countries", featureCollection(countries.map(asCountryFeature) as any));
+    sourceSetData(map, "atlas-country-labels", featureCollection(countryLabels.map(asCountryLabelFeature) as any));
     sourceSetData(map, "atlas-adm1", featureCollection(adm1.map(asBoundaryFeature) as any));
     sourceSetData(map, "atlas-adm2", featureCollection(adm2.map(asBoundaryFeature) as any));
     sourceSetData(map, "atlas-localities", featureCollection(localities.map(asLocalityFeature) as any));
-  }, [adm1, adm2, countries, localities, mapLoaded, styleReady]);
+  }, [adm1, adm2, countryLabels, countries, globalMvt, localities, mapLoaded, styleReady]);
 
   return <div ref={containerRef} className="absolute inset-0 h-full w-full" data-maplibre-world />;
 });

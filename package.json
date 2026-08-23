@@ -13,6 +13,7 @@
     "data:build": "python3 scripts/build_real_data.py",
     "data:refresh": "pnpm data:download && pnpm data:build",
     "data:world:build": "node scripts/build_world_venture_data.mjs && node scripts/build_india_tiles.mjs",
+    "data:world:global:build": "python3 scripts/build_global_geoboundaries_mvt.py",
     "data:india:tiles": "node scripts/build_india_tiles.mjs",
     "format": "prettier --write ."
   },

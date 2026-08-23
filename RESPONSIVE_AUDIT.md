@@ -91,3 +91,11 @@ The local app switches successfully from World to Graph via the tab control. The
 The first synthetic Graph gesture did not change the canvas because it targeted the canvas parent rather than the actual `#atlas-canvas` section that owns the pointer handlers. The DOM ancestry confirms `#atlas-canvas` is the correct interaction surface; the canvas itself is an absolutely positioned child.
 
 The corrected Graph touch test waits one animation frame and confirms the canvas transform changes from `translate(0px, 0px) scale(1)` to `translate(80px, 40px) scale(1)`. The immediate pre-frame read was unchanged by design; motion is now deferred to the next frame to avoid synchronous redraw work.
+
+## Production smoothing release
+
+The optimized motion and visual-scaling code has been pushed as commit `829fac4`, and GitHub Actions run `32607937923` completed successfully with the static build, D1 migration, and Cloudflare Worker deploy steps all green. The production Worker now serves the updated World map release.
+
+## Final production touch test
+
+On the newly deployed Worker, a one-finger touch pan changes the World SVG transform from `translate(640 380) scale(1)` to `translate(690 415) scale(1)` after the animation-frame settle. This confirms the imperative smooth-motion path is present in production, not only in the local development server.

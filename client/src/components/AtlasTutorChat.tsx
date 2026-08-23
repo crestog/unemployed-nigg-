@@ -115,7 +115,7 @@ export default function AtlasTutorChat({
 
   return (
     <aside
-      className="fixed inset-y-0 right-0 z-[60] flex w-full max-w-[520px] flex-col border-l border-white/10 bg-[#0d1627] shadow-2xl shadow-black/50"
+      className="fixed inset-y-0 right-0 z-[60] flex w-full max-w-[520px] flex-col border-l border-white/10 bg-[#0d1627] pb-[env(safe-area-inset-bottom)] shadow-2xl shadow-black/50 max-sm:border-l-0"
       role="dialog"
       aria-modal="true"
       aria-label="Atlas AI Tutor"
@@ -260,7 +260,7 @@ export default function AtlasTutorChat({
             onChange={event => setQuestion(event.target.value)}
             placeholder="Ask about this roadmap…"
             rows={2}
-            className="min-h-[46px] flex-1 resize-none bg-transparent px-2 py-1 text-sm leading-6 text-white outline-none placeholder:text-[#687691]"
+            className="min-h-[46px] max-h-32 flex-1 resize-none bg-transparent px-2 py-1 text-sm leading-6 text-white outline-none placeholder:text-[#687691]"
           />
           <button
             type="submit"

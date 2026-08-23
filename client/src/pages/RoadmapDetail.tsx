@@ -153,7 +153,7 @@ export default function RoadmapDetail() {
   return (
     <div className="min-h-screen bg-[#0b1220] text-[#f6f4ff]">
       <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0b1220]/95 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-4 px-4 py-3 lg:px-8">
+        <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-3 px-4 py-2.5 sm:py-3 lg:px-8">
           <Link
             href="/roadmaps"
             className="inline-flex items-center gap-2 text-sm font-bold text-[#b9c3da] hover:text-white"
@@ -183,7 +183,7 @@ export default function RoadmapDetail() {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-[1200px] px-4 py-8 lg:px-8 lg:py-12">
+      <main className="mx-auto max-w-[1200px] px-4 py-6 sm:py-8 lg:px-8 lg:py-12">
         <section className="grid gap-6 border-b border-white/10 pb-8 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-end">
           <div>
             <div className="flex flex-wrap items-center gap-2 text-[10px] font-extrabold uppercase tracking-[.2em] text-[#9a8bff]">
@@ -195,13 +195,13 @@ export default function RoadmapDetail() {
               <span className="text-[#53617d]">/</span>
               <span>{roadmap.slug}</span>
             </div>
-            <h1 className="atlas-serif mt-4 text-5xl font-semibold tracking-[-.06em] text-white sm:text-6xl">
+            <h1 className="atlas-serif mt-4 text-4xl font-semibold leading-[.95] tracking-[-.06em] text-white sm:text-6xl">
               {roadmap.title}
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-7 text-[#a9b4cb]">
               {roadmap.description}
             </p>
-            <div className="mt-6 flex flex-wrap gap-3">
+            <div className="mt-6 grid gap-2 sm:flex sm:flex-wrap sm:gap-3">
               <button
                 type="button"
                 onClick={toggleFavorite}
@@ -259,7 +259,7 @@ export default function RoadmapDetail() {
                 Switch between the public graph layout and the full topic index.
               </p>
             </div>
-            <div className="flex rounded-lg border border-white/10 bg-[#111a2c] p-1">
+            <div className="grid w-full grid-cols-2 rounded-lg border border-white/10 bg-[#111a2c] p-1 sm:w-auto">
               <button
                 type="button"
                 onClick={() => setView("map")}
@@ -449,12 +449,12 @@ export default function RoadmapDetail() {
       )}
       {selected && (
         <div
-          className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex justify-end bg-black/60 p-0 backdrop-blur-sm sm:p-3"
           role="dialog"
           aria-modal="true"
           aria-label={`${selected.title} topic`}
         >
-          <aside className="h-full w-full max-w-[720px] overflow-y-auto border-l border-white/10 bg-[#0f182a] p-5 shadow-2xl sm:p-8">
+          <aside className="h-full w-full max-w-[720px] overflow-y-auto border-l border-white/10 bg-[#0f182a] p-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl sm:p-8">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-[10px] font-extrabold uppercase tracking-[.2em] text-[#c084fc]">

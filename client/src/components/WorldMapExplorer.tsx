@@ -105,10 +105,39 @@ function overlayTarget(target: EventTarget | null) {
   );
 }
 
+function touchDistance(
+  first: { x: number; y: number },
+  second: { x: number; y: number }
+) {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function touchMidpoint(
+  first: { x: number; y: number },
+  second: { x: number; y: number }
+) {
+  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+}
+
 export default function WorldMapExplorer() {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const movedRef = useRef(false);
   const restoredRef = useRef(false);
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{
+    distance: number;
+    midpoint: { x: number; y: number };
+    camera: Camera;
+  } | null>(null);
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(
+    null
+  );
+  const suppressClickUntilRef = useRef(0);
+  const cameraRef = useRef<Camera>({ x: 640, y: 380, k: 1 });
+  const mapGroupRef = useRef<SVGGElement>(null);
+  const dragRef = useRef<{ pointer: number; x: number; y: number } | null>(
+    null
+  );
   const [release, setRelease] = useState<WorldRelease | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 1280, height: 760 });
@@ -123,6 +152,28 @@ export default function WorldMapExplorer() {
     y: number;
   } | null>(null);
   const [nearbyMode, setNearbyMode] = useState(false);
+
+  const applyCamera = (next: Camera, commit = false) => {
+    cameraRef.current = next;
+    if (mapGroupRef.current) {
+      mapGroupRef.current.setAttribute(
+        "transform",
+        `translate(${next.x} ${next.y}) scale(${next.k}) translate(${-size.width / 2} ${-size.height / 2})`
+      );
+    }
+    if (commit) setCamera(next);
+  };
+  const commitCamera = () => setCamera(cameraRef.current);
+
+  useEffect(() => {
+    cameraRef.current = camera;
+    if (mapGroupRef.current) {
+      mapGroupRef.current.setAttribute(
+        "transform",
+        `translate(${camera.x} ${camera.y}) scale(${camera.k}) translate(${-size.width / 2} ${-size.height / 2})`
+      );
+    }
+  }, [camera, size.height, size.width]);
 
   useEffect(() => {
     fetch("/data/world-venture.json")
@@ -160,6 +211,17 @@ export default function WorldMapExplorer() {
     [size.height, size.width]
   );
   const pathMaker = useMemo(() => geoPath(projection), [projection]);
+  const worldPath = useMemo(() => pathMaker(mapCollection) ?? "", [pathMaker]);
+  const countryPaths = useMemo(
+    () =>
+      countryFeatures.map((country, index) => ({
+        country,
+        id: topologyId(country),
+        key: `country-${index}-${topologyId(country)}`,
+        d: pathMaker(country) ?? "",
+      })),
+    [pathMaker]
+  );
 
   const recordsById = useMemo(
     () =>
@@ -171,28 +233,29 @@ export default function WorldMapExplorer() {
       ),
     [release]
   );
-  const nodes = useMemo<WorldNode[]>(
-    () =>
-      countryFeatures.flatMap(country => {
-        const id = topologyId(country);
-        const [x, y] = pathMaker.centroid(country as GeoJSON.Feature);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
-        const record = recordsById.get(id) ?? null;
-        return [
-          {
-            id,
-            name: record?.countryName ?? country.properties?.name ?? "Country",
-            code: record?.countryCode ?? id,
-            x,
-            y,
-            total: record?.total ?? null,
-            record,
-            feature: country,
-          },
-        ];
-      }),
-    [pathMaker, recordsById]
-  );
+  const nodes = useMemo<WorldNode[]>(() => {
+    const seen = new Set<string>();
+    return countryFeatures.flatMap(country => {
+      const id = topologyId(country);
+      if (seen.has(id)) return [];
+      seen.add(id);
+      const [x, y] = pathMaker.centroid(country as GeoJSON.Feature);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
+      const record = recordsById.get(id) ?? null;
+      return [
+        {
+          id,
+          name: record?.countryName ?? country.properties?.name ?? "Country",
+          code: record?.countryCode ?? id,
+          x,
+          y,
+          total: record?.total ?? null,
+          record,
+          feature: country,
+        },
+      ];
+    });
+  }, [pathMaker, recordsById]);
   const nodeById = useMemo(
     () => new Map(nodes.map(node => [node.id, node])),
     [nodes]
@@ -264,17 +327,20 @@ export default function WorldMapExplorer() {
     return () => window.clearTimeout(timeout);
   }, [camera, nearbyMode, release, selectedId]);
 
-  const zoomAt = (px: number, py: number, factor: number) =>
-    setCamera(current => {
-      const nextK = clamp(current.k * factor, MIN_ZOOM, MAX_ZOOM);
-      const mapX = (px - current.x) / current.k + size.width / 2;
-      const mapY = (py - current.y) / current.k + size.height / 2;
-      return {
+  const zoomAt = (px: number, py: number, factor: number) => {
+    const current = cameraRef.current;
+    const nextK = clamp(current.k * factor, MIN_ZOOM, MAX_ZOOM);
+    const mapX = (px - current.x) / current.k + size.width / 2;
+    const mapY = (py - current.y) / current.k + size.height / 2;
+    applyCamera(
+      {
         k: nextK,
         x: px - (mapX - size.width / 2) * nextK,
         y: py - (mapY - size.height / 2) * nextK,
-      };
-    });
+      },
+      true
+    );
+  };
 
   const focusNode = (node: WorldNode, zoom = 3.8) => {
     setSelectedId(node.id);
@@ -315,23 +381,117 @@ export default function WorldMapExplorer() {
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (overlayTarget(event.target)) return;
     movedRef.current = false;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setDrag({ pointer: event.pointerId, x: event.clientX, y: event.clientY });
+    pointersRef.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is unavailable for synthetic or platform-owned touch events.
+    }
+    if (pointersRef.current.size === 1) {
+      const nextDrag = {
+        pointer: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+      };
+      dragRef.current = nextDrag;
+      setDrag(nextDrag);
+    } else if (pointersRef.current.size === 2) {
+      const [first, second] = Array.from(pointersRef.current.values());
+      pinchRef.current = {
+        distance: touchDistance(first, second),
+        midpoint: touchMidpoint(first, second),
+        camera: cameraRef.current,
+      };
+      movedRef.current = true;
+      dragRef.current = null;
+      setDrag(null);
+    }
   };
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!drag || drag.pointer !== event.pointerId) return;
-    const dx = event.clientX - drag.x;
-    const dy = event.clientY - drag.y;
+    const previous = pointersRef.current.get(event.pointerId);
+    if (!previous) return;
+    pointersRef.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (pointersRef.current.size >= 2) {
+      const [first, second] = Array.from(pointersRef.current.values());
+      const pinch = pinchRef.current;
+      if (!pinch) return;
+      const distance = Math.max(1, touchDistance(first, second));
+      const midpoint = touchMidpoint(first, second);
+      const rect = event.currentTarget.getBoundingClientRect();
+      const midpointX = midpoint.x - rect.left;
+      const midpointY = midpoint.y - rect.top;
+      const startMidpointX = pinch.midpoint.x - rect.left;
+      const startMidpointY = pinch.midpoint.y - rect.top;
+      const startCamera = pinch.camera;
+      const nextK = clamp(
+        startCamera.k * (distance / Math.max(1, pinch.distance)),
+        MIN_ZOOM,
+        MAX_ZOOM
+      );
+      const worldX =
+        (startMidpointX - startCamera.x) / startCamera.k + size.width / 2;
+      const worldY =
+        (startMidpointY - startCamera.y) / startCamera.k + size.height / 2;
+      applyCamera({
+        k: nextK,
+        x: midpointX - (worldX - size.width / 2) * nextK,
+        y: midpointY - (worldY - size.height / 2) * nextK,
+      });
+      movedRef.current = true;
+      return;
+    }
+    const activeDrag = dragRef.current;
+    if (!activeDrag || activeDrag.pointer !== event.pointerId) return;
+    const dx = event.clientX - previous.x;
+    const dy = event.clientY - previous.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) movedRef.current = true;
-    setCamera(current => ({
-      ...current,
-      x: current.x + dx,
-      y: current.y + dy,
-    }));
-    setDrag({ pointer: event.pointerId, x: event.clientX, y: event.clientY });
+    const current = cameraRef.current;
+    applyCamera({ ...current, x: current.x + dx, y: current.y + dy });
+    dragRef.current = {
+      pointer: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+    };
   };
   const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (drag?.pointer === event.pointerId) setDrag(null);
+    const pointer = pointersRef.current.get(event.pointerId);
+    pointersRef.current.delete(event.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (dragRef.current?.pointer === event.pointerId) {
+      dragRef.current = null;
+      setDrag(null);
+    }
+    if (movedRef.current) {
+      commitCamera();
+      return;
+    }
+    if (!pointer || pointersRef.current.size > 0) return;
+    const now = performance.now();
+    const lastTap = lastTapRef.current;
+    const isDoubleTap =
+      lastTap &&
+      now - lastTap.time < 320 &&
+      Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 32;
+    if (isDoubleTap) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      zoomAt(event.clientX - rect.left, event.clientY - rect.top, 1.8);
+      suppressClickUntilRef.current = now + 260;
+      lastTapRef.current = null;
+    } else {
+      lastTapRef.current = { time: now, x: event.clientX, y: event.clientY };
+    }
+  };
+  const onPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(event.pointerId);
+    pinchRef.current = null;
+    dragRef.current = null;
+    setDrag(null);
   };
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     if (overlayTarget(event.target)) return;
@@ -343,12 +503,6 @@ export default function WorldMapExplorer() {
       Math.exp(-event.deltaY * 0.0015)
     );
   };
-  const onDoubleClick = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (overlayTarget(event.target)) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    zoomAt(event.clientX - rect.left, event.clientY - rect.top, 1.8);
-  };
-
   if (error)
     return (
       <div className="grid min-h-[calc(100vh-68px)] place-items-center bg-[#08111d] p-6 text-center text-white">
@@ -376,13 +530,12 @@ export default function WorldMapExplorer() {
   return (
     <section
       ref={surfaceRef}
-      className={`relative min-h-[calc(100vh-68px)] overflow-hidden bg-[#08111d] text-white select-none ${drag ? "cursor-grabbing" : "cursor-grab"}`}
+      className={`relative h-[calc(100dvh-112px)] min-h-[520px] touch-none overflow-hidden sm:h-[calc(100dvh-68px)] sm:min-h-[560px] bg-[#08111d] text-white select-none ${drag ? "cursor-grabbing" : "cursor-grab"}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={() => setDrag(null)}
+      onPointerCancel={onPointerCancel}
       onWheel={onWheel}
-      onDoubleClick={onDoubleClick}
     >
       <svg
         className="absolute inset-0 h-full w-full touch-none"
@@ -425,23 +578,23 @@ export default function WorldMapExplorer() {
           fill="url(#atlas-world-grid)"
         />
         <g
+          ref={mapGroupRef}
           transform={`translate(${camera.x} ${camera.y}) scale(${camera.k}) translate(${-size.width / 2} ${-size.height / 2})`}
         >
           <path
-            d={pathMaker(mapCollection) ?? ""}
+            d={worldPath}
             fill="#0c1c2d"
             stroke="#29445e"
             strokeWidth={1.2 / camera.k}
           />
-          {countryFeatures.map(country => {
-            const id = topologyId(country);
+          {countryPaths.map(({ country, id, key, d }) => {
             const node = nodeById.get(id);
             const visible = !nearbyMode || nearbyIds.has(id);
             const isSelected = selectedId === id;
             return (
               <path
-                key={id}
-                d={pathMaker(country) ?? ""}
+                key={key}
+                d={d}
                 fill={isSelected ? "#263c5c" : visible ? "#10263a" : "#0a1624"}
                 fillOpacity={isSelected ? 0.95 : visible ? 0.72 : 0.18}
                 stroke={
@@ -453,7 +606,11 @@ export default function WorldMapExplorer() {
                 onPointerLeave={() => setHovered(null)}
                 onClick={event => {
                   event.stopPropagation();
-                  if (!movedRef.current && node)
+                  if (
+                    !movedRef.current &&
+                    performance.now() >= suppressClickUntilRef.current &&
+                    node
+                  )
                     focusNode(node, Math.max(2.2, camera.k));
                 }}
               >
@@ -485,7 +642,11 @@ export default function WorldMapExplorer() {
                 onPointerLeave={() => setHovered(null)}
                 onClick={event => {
                   event.stopPropagation();
-                  if (!movedRef.current) focusNode(node, Math.max(3, camera.k));
+                  if (
+                    !movedRef.current &&
+                    performance.now() >= suppressClickUntilRef.current
+                  )
+                    focusNode(node, Math.max(3, camera.k));
                 }}
               >
                 <circle
@@ -540,7 +701,7 @@ export default function WorldMapExplorer() {
 
       <div
         data-world-overlay
-        className="absolute left-4 top-4 z-20 max-w-[min(690px,calc(100vw-2rem))]"
+        className="absolute left-3 right-3 top-3 z-20 max-w-none sm:left-4 sm:right-auto sm:top-4 sm:max-w-[min(690px,calc(100vw-2rem))]"
         onPointerDown={event => event.stopPropagation()}
         onWheel={event => event.stopPropagation()}
       >
@@ -641,7 +802,7 @@ export default function WorldMapExplorer() {
 
       <div
         data-world-overlay
-        className="absolute bottom-4 left-4 z-30 w-[min(540px,calc(100vw-2rem))]"
+        className="absolute bottom-[max(1rem,env(safe-area-inset-bottom))] left-3 z-30 w-[calc(100%-6rem)] sm:bottom-4 sm:left-4 sm:w-[min(540px,calc(100vw-2rem))]"
         onPointerDown={event => event.stopPropagation()}
         onWheel={event => event.stopPropagation()}
       >
@@ -695,7 +856,7 @@ export default function WorldMapExplorer() {
             </div>
           )}
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="mt-2 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap">
           <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
             Drag to roam
           </span>
@@ -710,7 +871,7 @@ export default function WorldMapExplorer() {
 
       <div
         data-world-overlay
-        className="absolute bottom-4 right-4 z-20 flex flex-col gap-2"
+        className="absolute bottom-[max(1rem,env(safe-area-inset-bottom))] right-3 z-20 flex flex-col gap-2 sm:bottom-4 sm:right-4"
         onPointerDown={event => event.stopPropagation()}
         onWheel={event => event.stopPropagation()}
       >
@@ -743,11 +904,11 @@ export default function WorldMapExplorer() {
       {selected && (
         <aside
           data-world-overlay
-          className="absolute bottom-4 right-4 top-4 z-40 flex w-[min(410px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[#35536f] bg-[#0b1a2a]/97 shadow-2xl shadow-black/40 backdrop-blur-xl sm:right-16"
+          className="absolute bottom-0 left-0 right-0 top-0 z-40 flex w-full flex-col overflow-hidden rounded-none sm:bottom-4 sm:left-auto sm:right-4 sm:top-4 sm:w-[min(410px,calc(100vw-2rem))] sm:rounded-2xl border border-[#35536f] bg-[#0b1a2a]/97 shadow-2xl shadow-black/40 backdrop-blur-xl sm:right-16"
           onPointerDown={event => event.stopPropagation()}
           onWheel={event => event.stopPropagation()}
         >
-          <div className="flex items-center justify-between border-b border-[#203b54] px-5 py-4">
+          <div className="flex items-center justify-between border-b border-[#203b54] px-4 py-3 pb-[max(.75rem,env(safe-area-inset-top))] sm:px-5 sm:py-4">
             <span className="font-mono text-[9px] uppercase tracking-[.18em] text-[#8fa7bc]">
               Country field inspector
             </span>
@@ -760,7 +921,7 @@ export default function WorldMapExplorer() {
               <X className="h-4 w-4" />
             </button>
           </div>
-          <div className="flex-1 overflow-auto p-5">
+          <div className="flex-1 overflow-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-5">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[.16em] text-[#45d7c0]">
                 <span className="h-2 w-2 rounded-full bg-[#45d7c0]" />

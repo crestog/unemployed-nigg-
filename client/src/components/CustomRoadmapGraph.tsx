@@ -104,7 +104,7 @@ export default function CustomRoadmapGraph({
             </span>
           </div>
         </div>
-        <div className="overflow-x-auto p-4 sm:p-6">
+        <div className="hidden overflow-x-auto p-4 sm:block sm:p-6">
           <div className="min-w-[960px]">
             <svg
               viewBox={`0 0 ${width} ${height}`}
@@ -238,7 +238,54 @@ export default function CustomRoadmapGraph({
             </svg>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-4 border-t border-[#e2e5ea] bg-white px-5 py-3 text-[10px] font-extrabold uppercase tracking-[.13em] text-[#737e8d]">
+        <div className="grid gap-3 p-4 sm:hidden">
+          {phases.map(([phase, phaseNodes]) => (
+            <section
+              key={phase}
+              className="rounded-xl border border-[#e2e5ea] bg-white p-3"
+            >
+              <div className="mb-2 flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-[.16em] text-[#697586]">
+                <span className="h-2 w-2 rounded-full bg-[#6d4aff]" /> {phase}
+              </div>
+              <div className="grid gap-2">
+                {phaseNodes.map(node => {
+                  const done = completed.has(node.id);
+                  const palette = COLORS[node.type] || COLORS.core;
+                  return (
+                    <button
+                      key={node.id}
+                      type="button"
+                      onClick={() => setSelected(node)}
+                      className={`flex min-h-16 items-start gap-3 rounded-lg border p-3 text-left transition active:scale-[.99] ${done ? "border-[#6d4aff] bg-[#f0ecff]" : "border-[#e5e7eb] bg-[#f9fafb] hover:border-[#6d4aff]"}`}
+                    >
+                      <span
+                        className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-extrabold"
+                        style={{
+                          background: done ? "#6d4aff" : palette.fill,
+                          color: done ? "white" : palette.text,
+                        }}
+                      >
+                        {done ? "✓" : ""}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span
+                          className={`block text-sm font-bold ${done ? "text-[#4d389f]" : "text-[#202a38]"}`}
+                        >
+                          {node.title}
+                        </span>
+                        <span className="mt-1 block line-clamp-2 text-xs leading-5 text-[#697586]">
+                          {node.description}
+                        </span>
+                      </span>
+                      <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-[#98a3b2]" />
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 border-t border-[#e2e5ea] bg-white px-4 py-3 text-[10px] font-extrabold uppercase tracking-[.13em] text-[#737e8d] sm:gap-4 sm:px-5">
           <span className="inline-flex items-center gap-2">
             <i className="h-2.5 w-2.5 rounded-full bg-[#fff800] ring-1 ring-[#765f00]" />{" "}
             Core
@@ -258,12 +305,12 @@ export default function CustomRoadmapGraph({
       </section>
       {selected && (
         <div
-          className="fixed inset-0 z-[70] flex justify-end bg-black/45 backdrop-blur-sm"
+          className="fixed inset-0 z-[70] flex justify-end bg-black/45 p-2 backdrop-blur-sm sm:p-0"
           role="dialog"
           aria-modal="true"
           aria-label={`${selected.title} topic`}
         >
-          <aside className="h-full w-full max-w-[620px] overflow-y-auto bg-white p-5 text-[#18212e] shadow-2xl sm:p-8">
+          <aside className="h-full w-full max-w-[620px] overflow-y-auto rounded-xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-[#18212e] shadow-2xl sm:rounded-none sm:p-8">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-[10px] font-extrabold uppercase tracking-[.18em] text-[#6d4aff]">

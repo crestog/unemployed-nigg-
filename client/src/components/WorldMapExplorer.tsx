@@ -424,7 +424,7 @@ export default function WorldMapExplorer() {
 
   useEffect(() => {
     let active = true;
-    fetch("/data/world-mvt/manifest.json?v=20260823-webmercator", { cache: "no-store" })
+    fetch("/data/world-mvt/manifest.json?v=20260823-point-labels", { cache: "no-store" })
       .then(response => response.ok ? response.json() as Promise<GlobalMvtManifest> : null)
       .then(manifest => {
         if (active && manifest?.format === "atlas-global-geoboundaries-mvt-v1") setGlobalMvtManifest(manifest);

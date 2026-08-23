@@ -43,3 +43,18 @@ If production validation fails, do not manually edit the pointer to an incomplet
 ## Mobile acceptance test
 
 After Actions succeeds, test the live URL on a phone as one continuous MapLibre globe. Pan, pinch, rotate, and zoom through country scale; then inspect the Middle East/dateline, India/Japan, China/Russia, and the safe polar threshold. Confirm that labels are not duplicated, global and India ownership do not overlap, ADM1 fill fades before ADM2 fill takes over, and no dark rectangular or world-spanning mass appears. The Web Mercator globe limitation at high latitudes remains explicit: the current pipeline rejects unsupported global ADM detail there; it does not claim polar administrative correctness.
+
+
+## Progress output and dependency isolation
+
+The builder now prints flushed lines such as:
+
+```text
+[AtlasWorld] layer=adm1 phase=read sourceFeatures=2500 accepted=2310 rejected=190 antimeridian=14 polar=176
+[AtlasWorld] layer=adm1 phase=tile-encode outputLayer=adm1 tiles=100/1840 written=100 bytes=...
+[AtlasWorld] layer=adm1 phase=complete accepted=... rejected=... polygonTiles=... labelTiles=...
+```
+
+`read` reports source features parsed, accepted features, rejected features, accepted dateline splits, and polar-policy rejections. `tile-encode` reports candidate tiles, tiles written, bytes, and elapsed time. The release also stores `build-progress-adm1.jsonl` and `build-progress-adm2.jsonl` inside the immutable release directory for post-run inspection. If the process fails, the last printed phase identifies whether the failure happened during source geometry, audit writing, polygon encoding, label encoding, validation, or push.
+
+The copy-paste notebook uses `/kaggle/working/atlas-venv` for build-only packages and invokes the wrapper with `--skip-install`. This prevents the build dependencies from modifying Kaggle’s preinstalled BigFrames/Google packages and avoids the repeated protobuf resolver warnings. The CPU usage shown in Kaggle is expected: Shapely geometry repair, GeoJSON parsing, and MVT encoding are CPU-bound and do not use T4 GPU acceleration.

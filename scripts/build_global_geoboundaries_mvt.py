@@ -17,6 +17,8 @@ import hashlib
 import json
 import math
 import shutil
+import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -45,6 +47,14 @@ MAX_COMPONENT_LONGITUDE_SPAN = 180.0
 MVT_EXTENT = 4096
 MVT_BUFFER_PIXELS = 8
 EPSILON = 1e-9
+PROGRESS_INTERVAL_SECONDS = 10.0
+PROGRESS_FEATURE_INTERVAL = 250
+
+
+def progress_line(layer: str, phase: str, started: float, **values: Any) -> None:
+    elapsed = time.monotonic() - started
+    details = " ".join(f"{key}={value}" for key, value in values.items())
+    print(f"[AtlasWorld] layer={layer} phase={phase} elapsed={elapsed:.1f}s {details}".rstrip(), flush=True)
 
 
 class GeometryRejected(Exception):
@@ -377,9 +387,21 @@ def encode_tile(layer: str, records: list[dict[str, Any]], x: int, y: int, zoom:
     )
 
 
-def read_records(source_path: Path, layer: str, zoom: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def read_records(
+    source_path: Path,
+    layer: str,
+    zoom: int,
+    output_root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
     audit_rows: list[dict[str, Any]] = []
+    started = time.monotonic()
+    last_report = started
+    rejected_reasons: Counter[str] = Counter()
+    accepted_crossings = 0
+    progress_path = output_root / f"build-progress-{layer}.jsonl"
+    progress_path.write_text("", encoding="utf-8")
+    progress_line(layer, "read-start", started, sourceBytes=source_path.stat().st_size, zoom=zoom)
     with source_path.open("rb") as handle:
         for fallback_id, feature in enumerate(ijson.items(handle, "features.item"), start=1):
             record, audit = prepare_feature(feature, layer, zoom, fallback_id)
@@ -388,6 +410,46 @@ def read_records(source_path: Path, layer: str, zoom: int) -> tuple[list[dict[st
                 record["geometry"] = project_geometry(record["geometry"])
                 record["labelGeometry"] = record["geometry"].representative_point()
                 records.append(record)
+                if audit.get("antimeridianSplitCount", 0) > 0:
+                    accepted_crossings += 1
+            else:
+                rejected_reasons[str(audit.get("rejectedReason") or "unknown")] += 1
+            now = time.monotonic()
+            if fallback_id % PROGRESS_FEATURE_INTERVAL == 0 or now - last_report >= PROGRESS_INTERVAL_SECONDS:
+                elapsed = now - started
+                summary = {
+                    "layer": layer,
+                    "phase": "read",
+                    "elapsedSeconds": round(elapsed, 1),
+                    "sourceFeaturesSeen": fallback_id,
+                    "acceptedFeatures": len(records),
+                    "rejectedFeatures": fallback_id - len(records),
+                    "acceptedAntimeridianFeatures": accepted_crossings,
+                    "rejectedReasons": dict(rejected_reasons),
+                }
+                with progress_path.open("a", encoding="utf-8") as progress_handle:
+                    progress_handle.write(json.dumps(summary, separators=(",", ":")) + "\n")
+                progress_line(
+                    layer,
+                    "read",
+                    started,
+                    sourceFeatures=fallback_id,
+                    accepted=len(records),
+                    rejected=fallback_id - len(records),
+                    antimeridian=accepted_crossings,
+                    polar=rejected_reasons.get("outside_safe_vector_latitude", 0),
+                )
+                last_report = now
+    progress_line(
+        layer,
+        "read-complete",
+        started,
+        sourceFeatures=len(audit_rows),
+        accepted=len(records),
+        rejected=len(audit_rows) - len(records),
+        antimeridian=accepted_crossings,
+        polar=rejected_reasons.get("outside_safe_vector_latitude", 0),
+    )
     return records, audit_rows
 
 
@@ -424,7 +486,11 @@ def build_encoded_layer(
             tiles.setdefault(key, []).append(record)
     tile_bytes = 0
     tile_files: list[str] = []
-    for (x, y), records_for_tile in sorted(tiles.items()):
+    started = time.monotonic()
+    total_tiles = len(tiles)
+    progress_line(layer, "tile-encode-start", started, outputLayer=output_layer, records=len(records), candidateTiles=total_tiles, zoom=zoom)
+    last_report = started
+    for tile_index, ((x, y), records_for_tile) in enumerate(sorted(tiles.items()), start=1):
         payload = encode_tile(mvt_layer, records_for_tile, x, y, zoom)
         if not payload:
             continue
@@ -433,6 +499,11 @@ def build_encoded_layer(
         tile_path.write_bytes(payload)
         tile_bytes += len(payload)
         tile_files.append(f"{zoom}/{x}/{y}.pbf")
+        now = time.monotonic()
+        if tile_index == total_tiles or tile_index % 100 == 0 or now - last_report >= PROGRESS_INTERVAL_SECONDS:
+            progress_line(layer, "tile-encode", started, outputLayer=output_layer, tiles=f"{tile_index}/{total_tiles}", written=len(tile_files), bytes=tile_bytes)
+            last_report = now
+    progress_line(layer, "tile-encode-complete", started, outputLayer=output_layer, tiles=len(tile_files), bytes=tile_bytes)
     return {
         "tileZoom": zoom,
         "featureCount": len(records),
@@ -476,8 +547,11 @@ def write_audit(output_root: Path, audit_rows: list[dict[str, Any]], layer: str)
 
 
 def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    records, audit_rows = read_records(source_path, layer, zoom)
+    started = time.monotonic()
+    progress_line(layer, "start", started, source=source_path.name, sourceBytes=source_path.stat().st_size, zoom=zoom)
+    records, audit_rows = read_records(source_path, layer, zoom, output_root)
     audit_metadata = write_audit(output_root, audit_rows, layer)
+    progress_line(layer, "audit-written", started, sourceFeatures=len(audit_rows), accepted=len(records), rejected=len(audit_rows) - len(records), auditJson=audit_metadata["json"], auditCsv=audit_metadata["csv"])
     polygon_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=False)
     label_metadata = build_encoded_layer(records, layer, zoom, output_root, label_only=True)
     source_metadata = {
@@ -490,6 +564,7 @@ def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path) -> 
     label_metadata.update(source_metadata)
     polygon_metadata["invalidOrEmptyFeatures"] = audit_metadata["rejectedFeatureCount"]
     label_metadata["invalidOrEmptyFeatures"] = audit_metadata["rejectedFeatureCount"]
+    progress_line(layer, "complete", started, accepted=len(records), rejected=audit_metadata["rejectedFeatureCount"], polygonTiles=polygon_metadata["tileCount"], labelTiles=label_metadata["tileCount"], polygonBytes=polygon_metadata["tileBytes"], labelBytes=label_metadata["tileBytes"])
     return polygon_metadata, label_metadata, audit_metadata
 
 
@@ -506,11 +581,13 @@ def main() -> None:
     if output_root.exists():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
+    print(f"[AtlasWorld] build-start release={args.release_id} output={output_root} layers={','.join(args.layers)}", flush=True)
     configs = {"adm1": 5, "adm2": 7}
     layers: dict[str, Any] = {}
     audits: dict[str, Any] = {}
     for layer in args.layers:
         source_path = source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson"
+        print(f"[AtlasWorld] layer-start layer={layer} source={source_path.name} bytes={source_path.stat().st_size}", flush=True)
         if not source_path.exists():
             raise SystemExit(f"Missing source snapshot: {source_path}")
         polygon, labels, audit = build_layer(source_path, layer, configs[layer], output_root)
@@ -564,7 +641,8 @@ def main() -> None:
         "audits": audits,
     }
     (output_root / "build-summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(summary, indent=2))
+    print(f"[AtlasWorld] build-complete release={args.release_id} manifest={output_root / 'manifest.json'}", flush=True)
+    print(json.dumps(summary, indent=2), flush=True)
 
 
 if __name__ == "__main__":

@@ -237,9 +237,12 @@ def main() -> None:
 
     source_dir = repo / "data" / "raw" / "world" / "geoboundaries"
     try:
+        print(f"[AtlasWorld] phase=download-start sourceDir={source_dir}", flush=True)
         for layer, url in SOURCE_URLS.items():
             download(url, source_dir / f"geoBoundariesCGAZ_{layer.upper()}.geojson")
+        print("[AtlasWorld] phase=download-complete adm1+adm2", flush=True)
 
+        print(f"[AtlasWorld] phase=builder-start release={args.release_id}", flush=True)
         run([
             sys.executable,
             str(builder),
@@ -248,11 +251,15 @@ def main() -> None:
             "--release-id",
             args.release_id,
         ], cwd=repo)
+        print(f"[AtlasWorld] phase=builder-complete release={args.release_id}", flush=True)
 
         mvt_root = repo / "client" / "public" / "data" / "world-mvt"
         release_dir = mvt_root / args.release_id
+        print(f"[AtlasWorld] phase=validation-start releaseDir={release_dir}", flush=True)
         manifest = validate_release(release_dir)
+        print("[AtlasWorld] phase=validation-complete geometry-and-pbf-checks=passed", flush=True)
         remove_stale_releases(mvt_root, args.release_id)
+        print("[AtlasWorld] phase=stale-release-cleanup-complete", flush=True)
         print(json.dumps({
             "releaseId": manifest["releaseId"],
             "coordinateSystem": manifest["coordinateSystem"],
@@ -265,11 +272,14 @@ def main() -> None:
         }, indent=2), flush=True)
 
         archive = args.archive or (Path("/kaggle/working") / f"atlas-world-{args.release_id}.tar.gz")
+        print(f"[AtlasWorld] phase=archive-start path={archive}", flush=True)
         archive_release(mvt_root, release_dir, archive)
+        print("[AtlasWorld] phase=archive-complete", flush=True)
 
         if args.no_push:
             print("--no-push set; generated assets were not pushed.", flush=True)
         else:
+            print("[AtlasWorld] phase=push-start", flush=True)
             token = kaggle_secret("GITHUB_TOKEN")
             if not token:
                 raise SystemExit("Missing Kaggle Secret GITHUB_TOKEN. Add a fine-grained token with Contents read/write for this repository, then rerun.")
@@ -281,6 +291,7 @@ def main() -> None:
                 run(["git", "config", "user.email", "atlas-kaggle-builder@users.noreply.github.com"], cwd=repo)
                 run(["git", "commit", "-m", f"Publish global map release {args.release_id}"], cwd=repo)
                 run(["git", "push", "origin", args.branch], cwd=repo, env=authenticated_git_env(token))
+                print(f"[AtlasWorld] phase=push-complete release={args.release_id}", flush=True)
                 print(f"Pushed {args.release_id}; GitHub Actions should now deploy Cloudflare.", flush=True)
             else:
                 print("No generated asset changes to commit.", flush=True)

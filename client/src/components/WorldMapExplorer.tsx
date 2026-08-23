@@ -307,17 +307,44 @@ export default function WorldMapExplorer() {
         .map(item => item.id)
     );
   }, [nodes, selected]);
-  const nodeBudget = camera.k < 1.2 ? 140 : camera.k < 2.8 ? 220 : nodes.length;
+  const nodeBudget =
+    camera.k < 1.2
+      ? 140
+      : camera.k < 2.8
+        ? 220
+        : Math.min(nodes.length, camera.k < 6 ? 600 : 1200);
   const visibleNodes = useMemo(() => {
     if (nearbyMode) return nodes.filter(node => nearbyIds.has(node.id));
-    return [...nodes]
+    const viewportNodes = nodes.filter(node => {
+      if (node.id === selectedId) return true;
+      const screenX = camera.x + (node.x - size.width / 2) * camera.k;
+      const screenY = camera.y + (node.y - size.height / 2) * camera.k;
+      return (
+        screenX >= -100 &&
+        screenX <= size.width + 100 &&
+        screenY >= -100 &&
+        screenY <= size.height + 100
+      );
+    });
+    return [...viewportNodes]
       .sort((a, b) => {
         if (a.id === selectedId) return -1;
         if (b.id === selectedId) return 1;
         return (b.total ?? -1) - (a.total ?? -1);
       })
       .slice(0, nodeBudget);
-  }, [nearbyIds, nearbyMode, nodeBudget, nodes, selectedId]);
+  }, [
+    camera.k,
+    camera.x,
+    camera.y,
+    nearbyIds,
+    nearbyMode,
+    nodeBudget,
+    nodes,
+    selectedId,
+    size.height,
+    size.width,
+  ]);
   const labelIds = useMemo(() => {
     const labelBudget =
       camera.k < 1.6 ? 0 : camera.k < 2.8 ? 44 : camera.k < 6 ? 96 : 160;

@@ -1283,7 +1283,7 @@ export default function WorldMapExplorer() {
     visibleIndiaLocalities,
   ]);
   const countryLayers = useMemo(() => {
-    const palette = ["#1f5f75", "#2b7d78", "#426c9a", "#7a5c8f", "#956b45", "#3d7b91"];
+    const palette = ["#6e8f78", "#9a9d6d", "#7894a0", "#a08368", "#7d9270", "#8a8b9f", "#b09a70", "#6c8f88"];
     return countryFeatures.flatMap((country, index) => {
       const id = topologyId(country);
       const node = nodeById.get(id);
@@ -1400,10 +1400,10 @@ export default function WorldMapExplorer() {
       <div
         className="absolute inset-0 h-full w-full"
         style={{
-          backgroundColor: "#061423",
+          backgroundColor: "#020817",
           backgroundImage:
-            "linear-gradient(rgba(41,68,94,.18) 1px, transparent 1px), linear-gradient(90deg, rgba(41,68,94,.18) 1px, transparent 1px)",
-          backgroundSize: "42px 42px",
+            "radial-gradient(circle at 18% 24%, rgba(188,220,213,.22) 0 1px, transparent 1.5px), radial-gradient(circle at 76% 68%, rgba(239,204,151,.18) 0 1px, transparent 1.5px), radial-gradient(ellipse at center, rgba(15,58,78,.34), transparent 68%)",
+          backgroundSize: "132px 132px, 188px 188px, 100% 100%",
         }}
       >
         <MapLibreWorldScene

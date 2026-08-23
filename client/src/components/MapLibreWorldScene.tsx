@@ -167,7 +167,7 @@ function atlasStyle(input: {
       "atlas-localities": { type: "geojson", data: featureCollection(input.localities.map(asLocalityFeature) as any), maxzoom: 14 },
     },
     layers: [
-      { id: "atlas-background", type: "background", paint: { "background-color": "#061423" } },
+      { id: "atlas-background", type: "background", paint: { "background-color": "#020817" } },
       {
         id: "atlas-country-fill",
         type: "fill",
@@ -183,7 +183,7 @@ function atlasStyle(input: {
         type: "line",
         source: "atlas-countries",
         paint: {
-          "line-color": ["case", ["boolean", ["get", "selected"], false], "#ffd28a", "#3a6685"],
+          "line-color": ["case", ["boolean", ["get", "selected"], false], "#f5d78c", "#38566a"],
           "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.55, 4, 1.35, 8, 2.4],
           "line-opacity": 0.9,
         },
@@ -222,7 +222,7 @@ function atlasStyle(input: {
         source: "atlas-adm1",
         minzoom: 3.2,
         paint: {
-          "fill-color": "#2f8f86",
+          "fill-color": "#5f876f",
           "fill-opacity": ["case", ["boolean", ["get", "selected"], false], 0.58, 0.23],
         },
       },
@@ -231,7 +231,7 @@ function atlasStyle(input: {
         type: "line",
         source: "atlas-adm1",
         minzoom: 3.2,
-        paint: { "line-color": "#63d6be", "line-width": ["interpolate", ["linear"], ["zoom"], 3.2, 0.7, 7, 1.7], "line-opacity": 0.86 },
+        paint: { "line-color": "#bad09e", "line-width": ["interpolate", ["linear"], ["zoom"], 3.2, 0.7, 7, 1.7], "line-opacity": 0.86 },
       },
       {
         id: "atlas-adm1-label",
@@ -368,7 +368,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       minzoom: 5,
       maxzoom: 7.4,
       paint: {
-        "fill-color": "#4e8e9c",
+        "fill-color": "#738b76",
         "fill-opacity": ["interpolate", ["linear"], ["zoom"], 2.35, 0.04, 3.4, 0.11, 7.4, 0.16],
       },
     }, insertBefore);
@@ -380,7 +380,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       minzoom: 5,
       maxzoom: 7.4,
       paint: {
-        "line-color": "#70c6bb",
+        "line-color": "#b9c79b",
         "line-width": ["interpolate", ["linear"], ["zoom"], 2.35, 0.25, 7.4, 1.05],
         "line-opacity": 0.7,
       },
@@ -412,8 +412,8 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       "source-layer": "adm2",
       minzoom: 7,
       maxzoom: 12,
-      paint: {
-        "fill-color": "#ae8057",
+        paint: {
+          "fill-color": "#8a9870",
         "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5.4, 0.025, 7.8, 0.1, 12, 0.15],
       },
     }, insertBefore);
@@ -425,7 +425,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       minzoom: 7,
       maxzoom: 12,
       paint: {
-        "line-color": "#e1b477",
+        "line-color": "#d8c38f",
         "line-width": ["interpolate", ["linear"], ["zoom"], 5.4, 0.18, 12, 0.8],
         "line-opacity": 0.62,
       },

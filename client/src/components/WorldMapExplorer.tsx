@@ -1183,7 +1183,7 @@ export default function WorldMapExplorer() {
     Boolean(indiaTileManifest) &&
     !indiaDetailReady &&
     !indiaGeoError;
-  const indiaContextActive = selectedId === INDIA_ID || Boolean(geoSelection);
+  const indiaContextActive = selectedId === INDIA_ID || geoSelection?.scope === "india";
   const showIndiaHierarchy = Boolean(
     indiaGeography && (indiaInView || indiaContextActive) && camera.k >= 1.85
   );

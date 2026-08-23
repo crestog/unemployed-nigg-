@@ -340,6 +340,7 @@ function sourceSetData(map: MapLibreMap, sourceId: string, data: GeoJSON.Feature
 function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
   const adm1Source = "atlas-global-adm1";
   const adm2Source = "atlas-global-adm2";
+  const globalNonIndiaFilter = ["!=", ["get", "countryCode"], "IND"] as any;
   if (!map.getSource(adm1Source)) {
     map.addSource(adm1Source, {
       type: "vector",
@@ -365,6 +366,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       type: "fill",
       source: adm1Source,
       "source-layer": "adm1",
+      filter: globalNonIndiaFilter,
       minzoom: 5,
       maxzoom: 7.4,
       paint: {
@@ -377,6 +379,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       type: "line",
       source: adm1Source,
       "source-layer": "adm1",
+      filter: globalNonIndiaFilter,
       minzoom: 5,
       maxzoom: 7.4,
       paint: {
@@ -390,6 +393,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       type: "symbol",
       source: adm1Source,
       "source-layer": "adm1",
+      filter: globalNonIndiaFilter,
       minzoom: 5,
       maxzoom: 7.5,
       layout: {
@@ -410,6 +414,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       type: "fill",
       source: adm2Source,
       "source-layer": "adm2",
+      filter: globalNonIndiaFilter,
       minzoom: 7,
       maxzoom: 12,
         paint: {
@@ -422,6 +427,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       type: "line",
       source: adm2Source,
       "source-layer": "adm2",
+      filter: globalNonIndiaFilter,
       minzoom: 7,
       maxzoom: 12,
       paint: {

@@ -22,13 +22,14 @@ from typing import Any, Iterable
 import ijson
 from mapbox_vector_tile import encode
 from mapbox_vector_tile.polygon import make_it_valid
+from shapely import intersection as shapely_intersection
 from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, box, shape
 from shapely.ops import unary_union
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_DIR = ROOT / "data" / "raw" / "world" / "geoboundaries"
 DEFAULT_OUTPUT_BASE = ROOT / "client" / "public" / "data" / "world-mvt"
-DEFAULT_RELEASE = "world-global-geoboundaries-20260823"
+DEFAULT_RELEASE = "world-global-geoboundaries-20260823-webmercator"
 SOURCE_URLS = {
     "adm1": "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM1.geojson",
     "adm2": "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM2.geojson",
@@ -57,12 +58,31 @@ def tile_y(latitude: float, zoom: int) -> int:
 
 
 def tile_bounds(x: int, y: int, zoom: int) -> tuple[float, float, float, float]:
+    """Return tile bounds in EPSG:3857 meters for MVT quantization/clipping."""
     n = 2**zoom
-    west = x / n * 360.0 - 180.0
-    east = (x + 1) / n * 360.0 - 180.0
-    north = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * y / n))))
-    south = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (y + 1) / n))))
+    earth_radius = 6378137.0
+    world = 2.0 * math.pi * earth_radius
+    west = x / n * world - world / 2.0
+    east = (x + 1) / n * world - world / 2.0
+    north = world / 2.0 - y / n * world
+    south = world / 2.0 - (y + 1) / n * world
     return west, south, east, north
+
+
+def project_geometry(geometry: Any) -> Any:
+    """Project WGS84 geometry to spherical Web Mercator meters for MVT output."""
+    from shapely.ops import transform
+
+    earth_radius = 6378137.0
+    max_latitude = 85.05112878
+
+    def project(longitude: float, latitude: float, *extra: float) -> tuple[float, float]:
+        clipped_latitude = max(-max_latitude, min(max_latitude, latitude))
+        x = math.radians(longitude) * earth_radius
+        y = math.log(math.tan(math.pi / 4.0 + math.radians(clipped_latitude) / 2.0)) * earth_radius
+        return x, y
+
+    return transform(project, geometry)
 
 
 def clean_properties(properties: dict[str, Any], layer: str, fallback_id: int) -> tuple[str, dict[str, Any]]:
@@ -126,12 +146,22 @@ def feature_tiles(feature: dict[str, Any], layer: str, zoom: int, fallback_id: i
     return str(properties["atlasId"]), properties, geom, (minx, miny, maxx, maxy)
 
 
-def encode_tile(layer: str, records: list[dict[str, Any]], bounds: tuple[float, float, float, float]) -> bytes:
+def encode_tile(layer: str, records: list[dict[str, Any]], x: int, y: int, zoom: int) -> bytes:
+    bounds = tile_bounds(x, y, zoom)
     west, south, east, north = bounds
     features = []
     tile_shape = box(west, south, east, north)
     for record in records:
-        clipped = polygonal_geometry(record["geometry"].intersection(tile_shape))
+        projected = project_geometry(record["geometry"])
+        try:
+            clipped_geometry = shapely_intersection(projected, tile_shape, grid_size=0.01)
+        except Exception:
+            repaired = make_it_valid(projected)
+            try:
+                clipped_geometry = shapely_intersection(repaired, tile_shape, grid_size=1.0)
+            except Exception:
+                clipped_geometry = shapely_intersection(repaired.buffer(0), tile_shape, grid_size=1.0)
+        clipped = polygonal_geometry(clipped_geometry)
         if clipped.is_empty:
             continue
         features.append({
@@ -181,7 +211,7 @@ def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path) -> 
     tile_bytes = 0
     tile_files = []
     for (x, y), records in sorted(tiles.items()):
-        payload = encode_tile(layer, records, tile_bounds(x, y, zoom))
+        payload = encode_tile(layer, records, x, y, zoom)
         if not payload:
             continue
         tile_path = layer_root / str(zoom) / str(x) / f"{y}.pbf"
@@ -226,7 +256,7 @@ def main() -> None:
         "format": "atlas-global-geoboundaries-mvt-v1",
         "releaseId": args.release_id,
         "generatedAt": "2026-08-23T00:00:00Z",
-        "coordinateSystem": "WGS84 longitude/latitude source transformed to XYZ vector tiles at build time",
+        "coordinateSystem": "WGS84 longitude/latitude source projected to spherical Web Mercator meters and encoded as XYZ vector tiles at build time",
         "tileTemplate": "/data/world-mvt/{releaseId}/{layer}/{z}/{x}/{y}.pbf",
         "coveragePolicy": {
             "adm1": "Global composite administrative level 1 from geoBoundaries CGAZ; displayed as reference geometry.",

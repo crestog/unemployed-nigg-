@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from decimal import Decimal
 import json
 import os
 import shutil
@@ -157,7 +158,13 @@ def prepare_level(level_key: str, raw_dir: Path, download_dir: Path, workers: in
                     rewritten = {"type": "Feature", "properties": properties, "geometry": feature.get("geometry")}
                     if not first:
                         output.write(",")
-                    json.dump(rewritten, output, separators=(",", ":"), ensure_ascii=False)
+                    json.dump(
+                        rewritten,
+                        output,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                        default=lambda value: float(value) if isinstance(value, Decimal) else str(value),
+                    )
                     first = False
                     country_features += 1
                     feature_count += 1

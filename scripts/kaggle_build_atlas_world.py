@@ -53,8 +53,31 @@ HARD_REJECTION_MARKERS = (
 
 
 def run(command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
-    print("$", " ".join(command), flush=True)
-    subprocess.run(command, cwd=cwd, env=env, check=True)
+    log_path = Path(os.environ.get("ATLAS_BUILD_LOG", "/kaggle/working/atlas-build.log"))
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command_text = "$ " + " ".join(command)
+    print(command_text, flush=True)
+    with log_path.open("a", encoding="utf-8") as log_handle:
+        log_handle.write(command_text + "\\n")
+        log_handle.flush()
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            log_handle.write(line)
+            log_handle.flush()
+        return_code = process.wait()
+    if return_code:
+        print(f"[AtlasWorld] child-failed exitCode={return_code} log={log_path}", flush=True)
+        raise subprocess.CalledProcessError(return_code, command)
 
 
 def sha256_file(path: Path) -> str:

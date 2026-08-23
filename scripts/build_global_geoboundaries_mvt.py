@@ -23,13 +23,13 @@ import ijson
 from mapbox_vector_tile import encode
 from mapbox_vector_tile.polygon import make_it_valid
 from shapely import intersection as shapely_intersection
-from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, box, shape
+from shapely.geometry import GeometryCollection, MultiPolygon, Point, Polygon, box, shape
 from shapely.ops import unary_union
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_DIR = ROOT / "data" / "raw" / "world" / "geoboundaries"
 DEFAULT_OUTPUT_BASE = ROOT / "client" / "public" / "data" / "world-mvt"
-DEFAULT_RELEASE = "world-global-geoboundaries-20260823-webmercator"
+DEFAULT_RELEASE = "world-global-geoboundaries-20260823-point-labels"
 SOURCE_URLS = {
     "adm1": "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM1.geojson",
     "adm2": "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM2.geojson",
@@ -108,7 +108,7 @@ def clean_properties(properties: dict[str, Any], layer: str, fallback_id: int) -
 def polygonal_geometry(geometry: Any) -> Any:
     if geometry is None or geometry.is_empty:
         return geometry
-    if isinstance(geometry, (Polygon, MultiPolygon)):
+    if isinstance(geometry, (Point, Polygon, MultiPolygon)):
         return geometry
     if isinstance(geometry, GeometryCollection):
         parts = [part for part in geometry.geoms if isinstance(part, (Polygon, MultiPolygon)) and not part.is_empty]
@@ -152,11 +152,10 @@ def encode_tile(layer: str, records: list[dict[str, Any]], x: int, y: int, zoom:
     features = []
     tile_shape = box(west, south, east, north)
     for record in records:
-        projected = project_geometry(record["geometry"])
         try:
-            clipped_geometry = shapely_intersection(projected, tile_shape, grid_size=0.01)
+            clipped_geometry = shapely_intersection(record["geometry"], tile_shape, grid_size=0.01)
         except Exception:
-            repaired = make_it_valid(projected)
+            repaired = make_it_valid(record["geometry"])
             try:
                 clipped_geometry = shapely_intersection(repaired, tile_shape, grid_size=1.0)
             except Exception:
@@ -183,8 +182,10 @@ def encode_tile(layer: str, records: list[dict[str, Any]], x: int, y: int, zoom:
     )
 
 
-def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path) -> dict[str, Any]:
-    layer_root = output_root / layer
+def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path, label_only: bool = False) -> dict[str, Any]:
+    output_layer = f"{layer}-labels" if label_only else layer
+    mvt_layer = "labels" if label_only else layer
+    layer_root = output_root / output_layer
     if layer_root.exists():
         shutil.rmtree(layer_root)
     layer_root.mkdir(parents=True, exist_ok=True)
@@ -197,7 +198,12 @@ def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path) -> 
             if parsed is None:
                 invalid_count += 1
                 continue
-            feature_id, properties, geometry, bounds = parsed
+            feature_id, properties, source_geometry, bounds = parsed
+            geometry = project_geometry(source_geometry)
+            if label_only:
+                label_point = source_geometry.representative_point()
+                geometry = project_geometry(label_point)
+                bounds = (label_point.x, label_point.y, label_point.x, label_point.y)
             feature_count += 1
             minx, miny, maxx, maxy = bounds
             min_tile_x = tile_x(minx, zoom)
@@ -211,7 +217,7 @@ def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path) -> 
     tile_bytes = 0
     tile_files = []
     for (x, y), records in sorted(tiles.items()):
-        payload = encode_tile(layer, records, x, y, zoom)
+        payload = encode_tile(mvt_layer, records, x, y, zoom)
         if not payload:
             continue
         tile_path = layer_root / str(zoom) / str(x) / f"{y}.pbf"
@@ -226,6 +232,9 @@ def build_layer(source_path: Path, layer: str, zoom: int, output_root: Path) -> 
         "tileCount": len(tile_files),
         "tileBytes": tile_bytes,
         "tiles": tile_files,
+        "layerDirectory": output_layer,
+        "mvtSourceLayer": mvt_layer,
+        "labelOnly": label_only,
         "sourceFile": str(source_path.relative_to(ROOT)),
         "sourceSha256": sha256_file(source_path),
         "sourceUrl": SOURCE_URLS[layer],
@@ -252,6 +261,7 @@ def main() -> None:
         if not source_path.exists():
             raise SystemExit(f"Missing source snapshot: {source_path}")
         layers[layer] = build_layer(source_path, layer, configs[layer], output_root)
+        layers[f"{layer}Labels"] = build_layer(source_path, layer, configs[layer], output_root, label_only=True)
     manifest = {
         "format": "atlas-global-geoboundaries-mvt-v1",
         "releaseId": args.release_id,

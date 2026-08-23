@@ -30,13 +30,24 @@ export type GlobalMvtManifest = {
   };
   layers: {
     adm1: GlobalMvtLayer;
+    adm1Labels: GlobalMvtLayer;
     adm2: GlobalMvtLayer;
+    adm2Labels: GlobalMvtLayer;
   };
+};
+
+export type GlobalMvtLayerKey = keyof GlobalMvtManifest["layers"];
+
+const globalMvtDirectoryByKey: Record<GlobalMvtLayerKey, string> = {
+  adm1: "adm1",
+  adm1Labels: "adm1-labels",
+  adm2: "adm2",
+  adm2Labels: "adm2-labels",
 };
 
 export const globalMvtTileUrl = (
   manifest: GlobalMvtManifest,
-  layer: "adm1" | "adm2"
+  layer: GlobalMvtLayerKey
 ) => manifest.tileTemplate
   .replace("{releaseId}", manifest.releaseId)
-  .replace("{layer}", layer);
+  .replace("{layer}", globalMvtDirectoryByKey[layer]);

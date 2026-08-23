@@ -339,7 +339,14 @@ function sourceSetData(map: MapLibreMap, sourceId: string, data: GeoJSON.Feature
 
 function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
   const adm1Source = "atlas-global-adm1";
+  const adm1LabelSource = "atlas-global-adm1-labels";
   const adm2Source = "atlas-global-adm2";
+  const adm2LabelSource = "atlas-global-adm2-labels";
+  const layers = manifest.layers as GlobalMvtManifest["layers"] & {
+    adm1Labels?: GlobalMvtManifest["layers"]["adm1Labels"];
+    adm2Labels?: GlobalMvtManifest["layers"]["adm2Labels"];
+  };
+  const hasDedicatedLabelTiles = Boolean(layers.adm1Labels && layers.adm2Labels);
   const globalNonIndiaFilter = ["!=", ["get", "countryCode"], "IND"] as any;
   if (!map.getSource(adm1Source)) {
     map.addSource(adm1Source, {
@@ -350,12 +357,30 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       promoteId: "atlasId",
     });
   }
+  if (hasDedicatedLabelTiles && !map.getSource(adm1LabelSource)) {
+    map.addSource(adm1LabelSource, {
+      type: "vector",
+      tiles: [globalMvtTileUrl(manifest, "adm1Labels")],
+      minzoom: layers.adm1Labels!.tileZoom,
+      maxzoom: layers.adm1Labels!.tileZoom,
+      promoteId: "atlasId",
+    });
+  }
   if (!map.getSource(adm2Source)) {
     map.addSource(adm2Source, {
       type: "vector",
       tiles: [globalMvtTileUrl(manifest, "adm2")],
       minzoom: manifest.layers.adm2.tileZoom,
       maxzoom: manifest.layers.adm2.tileZoom,
+      promoteId: "atlasId",
+    });
+  }
+  if (hasDedicatedLabelTiles && !map.getSource(adm2LabelSource)) {
+    map.addSource(adm2LabelSource, {
+      type: "vector",
+      tiles: [globalMvtTileUrl(manifest, "adm2Labels")],
+      minzoom: layers.adm2Labels!.tileZoom,
+      maxzoom: layers.adm2Labels!.tileZoom,
       promoteId: "atlasId",
     });
   }
@@ -391,8 +416,8 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
     map.addLayer({
       id: "atlas-global-adm1-label",
       type: "symbol",
-      source: adm1Source,
-      "source-layer": "adm1",
+      source: hasDedicatedLabelTiles ? adm1LabelSource : adm1Source,
+      "source-layer": hasDedicatedLabelTiles ? "labels" : "adm1",
       filter: globalNonIndiaFilter,
       minzoom: 5,
       maxzoom: 7.5,
@@ -439,8 +464,9 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
     map.addLayer({
       id: "atlas-global-adm2-label",
       type: "symbol",
-      source: adm2Source,
-      "source-layer": "adm2",
+      source: hasDedicatedLabelTiles ? adm2LabelSource : adm2Source,
+      "source-layer": hasDedicatedLabelTiles ? "labels" : "adm2",
+      filter: globalNonIndiaFilter,
       minzoom: 7.2,
       maxzoom: 12,
       layout: {

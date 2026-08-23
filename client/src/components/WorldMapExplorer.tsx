@@ -290,6 +290,14 @@ const geoKindLabel = (kind: GeoEntityKind) =>
       : kind === "adm2"
         ? "District"
         : "City / locality";
+const selectionKindLabel = (selection: Pick<GeoSelection, "scope" | "kind">) =>
+  selection.scope === "global"
+    ? selection.kind === "adm1"
+      ? "Administrative level 1"
+      : selection.kind === "adm2"
+        ? "Administrative level 2"
+        : geoKindLabel(selection.kind)
+    : geoKindLabel(selection.kind);
 const normalizeD3Geometry = (geometry: GeoJSON.Geometry): GeoJSON.Geometry => {
   if (geometry.type === "Polygon") {
     return {
@@ -1190,7 +1198,7 @@ export default function WorldMapExplorer() {
     : null;
   const estimatedMapZoom = 1.25 + Math.log2(Math.max(MIN_ZOOM, camera.k));
   const currentGeoLevel = geoSelection
-    ? geoKindLabel(geoSelection.kind)
+    ? selectionKindLabel(geoSelection)
     : indiaInView && camera.k >= INDIA_LOCALITY_ZOOM
       ? "City / locality"
       : indiaInView && camera.k >= INDIA_ADM2_ZOOM
@@ -1712,7 +1720,7 @@ export default function WorldMapExplorer() {
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[.16em] text-[#ffbf69]">
                 <span className="h-2 w-2 rounded-full bg-[#ffbf69]" />
-                {geoKindLabel(geoSelection.kind)}
+                {selectionKindLabel(geoSelection)}
               </div>
               <span className="rounded-full bg-[#122b40] px-2 py-1 font-mono text-[8px] uppercase tracking-[.13em] text-[#a1b6c8]">
                 {geoSelection.source.publisher}
@@ -1730,7 +1738,7 @@ export default function WorldMapExplorer() {
                   Current level
                 </div>
                 <div className="mt-1 text-sm font-semibold text-[#e6f3f2]">
-                  {geoKindLabel(geoSelection.kind)}
+                  {selectionKindLabel(geoSelection)}
                 </div>
               </div>
               <div>

@@ -983,6 +983,29 @@ export default function WorldMapExplorer() {
   }, [initialMapView]);
 
   useEffect(() => {
+    const applyHashCamera = () => {
+      const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      if (params.get("world") !== "1") return;
+      const lng = Number.parseFloat(params.get("wmlng") ?? "");
+      const lat = Number.parseFloat(params.get("wmlat") ?? "");
+      const zoom = Number.parseFloat(params.get("wmlz") ?? "");
+      if (![lng, lat, zoom].every(Number.isFinite)) return;
+      const bearing = Number.parseFloat(params.get("wmlb") ?? "");
+      const pitch = Number.parseFloat(params.get("wmlp") ?? "");
+      window.setTimeout(() => {
+        mapSceneRef.current?.setView({
+          center: [lng, lat],
+          zoom,
+          bearing: Number.isFinite(bearing) ? bearing : 0,
+          pitch: Number.isFinite(pitch) ? pitch : 0,
+        });
+      }, 0);
+    };
+    window.addEventListener("hashchange", applyHashCamera);
+    return () => window.removeEventListener("hashchange", applyHashCamera);
+  }, []);
+
+  useEffect(() => {
     if (!release) return;
     const timeout = window.setTimeout(() => {
       const params = new URLSearchParams();

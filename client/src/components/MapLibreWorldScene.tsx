@@ -256,7 +256,7 @@ function drawPolarCanvas(
   });
   const polarCountryIds = new Set(candidates.map(country => country.id));
   candidates.forEach(country => {
-    const polarCapFillsViewport = country.id === "010" && north === false && screenSamplesInsideGeometry(map, country.feature.geometry, width, height);
+    const polarCapFillsViewport = country.id === "010" && !north && map.getCenter().lat <= -80 && map.getZoom() <= 5.2;
     context.beginPath();
     if (polarCapFillsViewport) {
       const center = map.project(map.getCenter());

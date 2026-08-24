@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type CSSProperties,
 } from "react";
 import {
   ArrowRight,
@@ -925,13 +926,28 @@ function AtlasShell({
   const [roadmapContext, setRoadmapContext] = useState<RoadmapContext | null>(
     null
   );
+  const headerRef = useRef<HTMLElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(68);
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+    const update = () => setHeaderHeight(Math.ceil(header.getBoundingClientRect().height));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
   const openRoadmap = (context: RoadmapContext) => {
     setRoadmapContext(context);
     setTab("roadmaps");
   };
   return (
-    <div id="top" className="min-h-screen bg-[#f8f5ec] text-[#242822]">
-      <header className="sticky top-0 z-50 border-b border-[#d8d5c8] bg-[#f8f5ec]/95 backdrop-blur-xl">
+    <div
+      id="top"
+      className="min-h-screen bg-[#f8f5ec] text-[#242822]"
+      style={{ "--atlas-header-height": `${headerHeight}px` } as CSSProperties}
+    >
+      <header ref={headerRef} className="sticky top-0 z-50 border-b border-[#d8d5c8] bg-[#f8f5ec]/95 backdrop-blur-xl">
         <div className="container flex min-h-[68px] items-center justify-between gap-4">
           <Brand />
           <div

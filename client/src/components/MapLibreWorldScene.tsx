@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { geoContains, geoOrthographic, geoPath } from "d3-geo";
+import { geoArea, geoContains, geoOrthographic, geoPath } from "d3-geo";
 import { LngLatBounds, Map as MapLibreMapClass, setWorkerUrl } from "maplibre-gl";
 import type { GeoJSONSource, Map as MapLibreMap, MapGeoJSONFeature, StyleSpecification } from "maplibre-gl";
 import type { GlobalMvtManifest } from "@/lib/worldMvt";
@@ -31,6 +31,7 @@ type CountryLabelRecord = {
   latitude: number;
   label: boolean;
   selected: boolean;
+  area?: number;
 };
 type BoundaryRecord = {
   id: string;
@@ -134,7 +135,10 @@ function drawGlobeOverview(
   });
 
   const globeRadius = projection.scale();
-  const labelSize = Math.max(10, Math.min(18, 10 + (map.getZoom() - 1.25) * 1.6));
+  const mobile = width <= 640;
+  const labelSize = mobile
+    ? Math.max(8.5, Math.min(11, 8.8 + (map.getZoom() - 1.25) * 0.8))
+    : Math.max(10, Math.min(18, 10 + (map.getZoom() - 1.25) * 1.6));
   context.font = `600 ${labelSize}px "Open Sans", Arial, sans-serif`;
   context.textAlign = "center";
   context.textBaseline = "middle";
@@ -146,9 +150,11 @@ function drawGlobeOverview(
       label,
       point: projection([label.longitude, label.latitude]),
       priority: label.selected ? 0 : label.id === "010" ? 1 : 2,
+      area: label.area ?? 0,
     }))
     .filter(item => item.point && Number.isFinite(item.point[0]) && Number.isFinite(item.point[1]))
-    .sort((a, b) => a.priority - b.priority);
+    .sort((a, b) => a.priority - b.priority || b.area - a.area || a.label.name.length - b.label.name.length)
+    .slice(0, mobile ? 34 : Number.POSITIVE_INFINITY);
 
   labelCandidates.forEach(({ label, point }) => {
     if (!point) return;
@@ -157,6 +163,7 @@ function drawGlobeOverview(
     const heightWithHalo = labelSize + 8;
     if (Math.hypot(x - width / 2, y - height / 2) > globeRadius - 4) return;
     const box = { x: x - widthWithHalo / 2, y: y - heightWithHalo / 2, width: widthWithHalo, height: heightWithHalo };
+    if (box.x < 3 || box.y < 3 || box.x + box.width > width - 3 || box.y + box.height > height - 3) return;
     if (occupied.some(other => box.x < other.x + other.width && box.x + box.width > other.x && box.y < other.y + other.height && box.y + box.height > other.y)) return;
     occupied.push(box);
     context.lineWidth = 3;

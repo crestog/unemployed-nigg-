@@ -6,6 +6,7 @@ import {
 } from "react";
 import { feature } from "topojson-client";
 import {
+  geoArea,
   geoBounds,
   geoCentroid,
   geoDistance,
@@ -1340,6 +1341,7 @@ export default function WorldMapExplorer() {
       latitude: anchor[1],
       label: item.label,
       selected: item.selected,
+      area: Math.abs(geoArea(item.feature as GeoJSON.Feature)),
     }] : [];
   }), [countryLayers]);
   const adm1Layers = useMemo(() => semanticAdm1.flatMap(item => item.geometry ? [{
@@ -1446,8 +1448,9 @@ export default function WorldMapExplorer() {
 
   return (
     <section
+      id="atlas-world-map"
       ref={surfaceRef}
-      className="relative h-[calc(100dvh-112px)] min-h-[520px] overflow-hidden bg-[#061423] text-white select-none sm:h-[calc(100dvh-68px)] sm:min-h-[560px]"
+      className="atlas-world-map relative h-[calc(100dvh-112px)] min-h-[520px] overflow-hidden bg-[#061423] text-white select-none sm:h-[calc(100dvh-68px)] sm:min-h-[560px]"
     >
       <div
         className="absolute inset-0 h-full w-full"
@@ -1476,7 +1479,7 @@ export default function WorldMapExplorer() {
 
       <div
         data-world-overlay
-        className="absolute left-3 right-3 top-3 z-20 max-w-none sm:left-4 sm:right-auto sm:top-4 sm:max-w-[min(690px,calc(100vw-2rem))]"
+        className="atlas-world-toolbar absolute left-3 right-3 top-3 z-20 max-w-none sm:left-4 sm:right-auto sm:top-4 sm:max-w-[min(690px,calc(100vw-2rem))]"
         onPointerDown={event => event.stopPropagation()}
         onWheel={event => event.stopPropagation()}
       >
@@ -1613,7 +1616,7 @@ export default function WorldMapExplorer() {
 
       <div
         data-world-overlay
-        className="absolute bottom-[max(1rem,env(safe-area-inset-bottom))] left-3 z-30 w-[calc(100%-6rem)] sm:bottom-4 sm:left-4 sm:w-[min(540px,calc(100vw-2rem))]"
+        className="atlas-world-search absolute bottom-[max(1rem,env(safe-area-inset-bottom))] left-3 z-30 w-[calc(100%-6rem)] sm:bottom-4 sm:left-4 sm:w-[min(540px,calc(100vw-2rem))]"
         onPointerDown={event => event.stopPropagation()}
         onWheel={event => event.stopPropagation()}
       >
@@ -1631,7 +1634,8 @@ export default function WorldMapExplorer() {
               if (geoMatches[0]) focusGeoResult(geoMatches[0]);
               else if (matches[0]) focusNode(matches[0]);
             }}
-            placeholder="Find a country, state, district, or city…"
+            placeholder="Find a place or country…"
+            aria-label="Find a country, state, district, or city"
             className="w-full rounded-xl border border-[#35536f] bg-[#0b1a2a]/96 py-3 pl-11 pr-4 text-sm text-[#e8f2f5] shadow-2xl shadow-black/25 outline-none transition placeholder:text-[#738aa0] focus:border-[#45d7c0] focus:ring-4 focus:ring-[#45d7c0]/10"
           />
           {showResults && query && (
@@ -1692,15 +1696,18 @@ export default function WorldMapExplorer() {
             </div>
           )}
         </div>
-        <div className="mt-2 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap">
+        <div className="atlas-world-status mt-2 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap">
           <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]" aria-live="polite">
             Zoom {mapZoom.toFixed(2)} · scale {zoomScaleLabel}
           </span>
           <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
             Drag to roam
           </span>
-          <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
+          <span className="atlas-desktop-map-hint rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
             Wheel at cursor
+          </span>
+          <span className="atlas-mobile-map-hint rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
+            Pinch / drag
           </span>
           <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
             {nodes.length} country fields
@@ -1716,7 +1723,7 @@ export default function WorldMapExplorer() {
 
       <div
         data-world-overlay
-        className="absolute bottom-[max(1rem,env(safe-area-inset-bottom))] right-3 z-20 flex flex-col gap-2 sm:bottom-4 sm:right-4"
+        className="atlas-world-controls absolute bottom-[max(1rem,env(safe-area-inset-bottom))] right-3 z-20 flex flex-col gap-2 sm:bottom-4 sm:right-4"
         onPointerDown={event => event.stopPropagation()}
         onWheel={event => event.stopPropagation()}
       >
@@ -1725,8 +1732,9 @@ export default function WorldMapExplorer() {
           onClick={() => setSpinEnabled(current => !current)}
           disabled={reducedMotion}
           aria-pressed={spinEnabled && !reducedMotion}
+          aria-label={reducedMotion ? "Automatic rotation disabled" : spinEnabled ? "Turn globe spin off" : "Turn globe spin on"}
           title={reducedMotion ? "Automatic rotation is disabled by reduced-motion preference" : "Toggle automatic globe rotation"}
-          className={`flex h-10 items-center gap-2 rounded-xl border px-3 text-[9px] font-semibold uppercase tracking-[.1em] shadow-xl ${reducedMotion ? "cursor-not-allowed border-[#2b4054] bg-[#0b1a2a]/80 text-[#64798b]" : spinEnabled ? "border-[#45d7c0] bg-[#123b43]/95 text-[#8fe7d8]" : "border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] hover:border-[#45d7c0] hover:text-[#45d7c0]"}`}
+          className={`atlas-button flex h-10 items-center gap-2 rounded-xl border px-3 text-[9px] font-semibold uppercase tracking-[.1em] shadow-xl ${reducedMotion ? "cursor-not-allowed border-[#2b4054] bg-[#0b1a2a]/80 text-[#64798b]" : spinEnabled ? "border-[#45d7c0] bg-[#123b43]/95 text-[#8fe7d8]" : "border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] hover:border-[#45d7c0] hover:text-[#45d7c0]"}`}
         >
           <RotateCw className="h-4 w-4" />
           <span>{reducedMotion ? "Reduced" : spinEnabled ? "Spin on" : "Spin off"}</span>
@@ -1734,7 +1742,7 @@ export default function WorldMapExplorer() {
         <button
           type="button"
           onClick={() => zoomAt(size.width / 2, size.height / 2, 1.55)}
-          className="grid h-10 w-10 place-items-center rounded-xl border border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] shadow-xl hover:border-[#45d7c0] hover:text-[#45d7c0]"
+          className="atlas-button grid h-10 w-10 place-items-center rounded-xl border border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] shadow-xl hover:border-[#45d7c0] hover:text-[#45d7c0]"
           aria-label="Zoom in"
         >
           <ZoomIn className="h-4 w-4" />
@@ -1742,7 +1750,7 @@ export default function WorldMapExplorer() {
         <button
           type="button"
           onClick={() => zoomAt(size.width / 2, size.height / 2, 1 / 1.55)}
-          className="grid h-10 w-10 place-items-center rounded-xl border border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] shadow-xl hover:border-[#45d7c0] hover:text-[#45d7c0]"
+          className="atlas-button grid h-10 w-10 place-items-center rounded-xl border border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] shadow-xl hover:border-[#45d7c0] hover:text-[#45d7c0]"
           aria-label="Zoom out"
         >
           <ZoomOut className="h-4 w-4" />
@@ -1750,7 +1758,7 @@ export default function WorldMapExplorer() {
         <button
           type="button"
           onClick={reset}
-          className="grid h-10 w-10 place-items-center rounded-xl border border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] shadow-xl hover:border-[#45d7c0] hover:text-[#45d7c0]"
+          className="atlas-button grid h-10 w-10 place-items-center rounded-xl border border-[#35536f] bg-[#0b1a2a]/95 text-[#c5d7e7] shadow-xl hover:border-[#45d7c0] hover:text-[#45d7c0]"
           aria-label="Reset world view"
         >
           <LocateFixed className="h-4 w-4" />
@@ -1760,7 +1768,7 @@ export default function WorldMapExplorer() {
       {geoSelection && (
         <aside
           data-world-overlay
-          className="absolute bottom-0 left-0 right-0 top-0 z-40 flex w-full flex-col overflow-hidden rounded-none sm:bottom-4 sm:left-auto sm:right-4 sm:top-4 sm:w-[min(410px,calc(100vw-2rem))] sm:rounded-2xl border border-[#35536f] bg-[#0b1a2a]/97 shadow-2xl shadow-black/40 backdrop-blur-xl sm:right-16"
+          className="atlas-world-inspector absolute bottom-0 left-0 right-0 top-0 z-40 flex w-full flex-col overflow-hidden rounded-none sm:bottom-4 sm:left-auto sm:right-4 sm:top-4 sm:w-[min(410px,calc(100vw-2rem))] sm:rounded-2xl border border-[#35536f] bg-[#0b1a2a]/97 shadow-2xl shadow-black/40 backdrop-blur-xl sm:right-16"
           onPointerDown={event => event.stopPropagation()}
           onWheel={event => event.stopPropagation()}
         >
@@ -1866,7 +1874,7 @@ export default function WorldMapExplorer() {
       {selected && !geoSelection && (
         <aside
           data-world-overlay
-          className="absolute bottom-0 left-0 right-0 top-0 z-40 flex w-full flex-col overflow-hidden rounded-none sm:bottom-4 sm:left-auto sm:right-4 sm:top-4 sm:w-[min(410px,calc(100vw-2rem))] sm:rounded-2xl border border-[#35536f] bg-[#0b1a2a]/97 shadow-2xl shadow-black/40 backdrop-blur-xl sm:right-16"
+          className="atlas-world-inspector absolute bottom-0 left-0 right-0 top-0 z-40 flex w-full flex-col overflow-hidden rounded-none sm:bottom-4 sm:left-auto sm:right-4 sm:top-4 sm:w-[min(410px,calc(100vw-2rem))] sm:rounded-2xl border border-[#35536f] bg-[#0b1a2a]/97 shadow-2xl shadow-black/40 backdrop-blur-xl sm:right-16"
           onPointerDown={event => event.stopPropagation()}
           onWheel={event => event.stopPropagation()}
         >

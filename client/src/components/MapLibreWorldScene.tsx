@@ -412,8 +412,9 @@ function atlasStyle(input: {
           "text-variable-anchor": ["center", "top", "bottom", "left", "right"],
           "text-letter-spacing": 0.015,
         },
+        filter: ["==", ["get", "label"], true],
         paint: {
-          "text-opacity": ["case", ["boolean", ["get", "label"], true], ["interpolate", ["linear"], ["zoom"], 0.8, 1, 4.7, 1, 5.4, 0], 0],
+          "text-opacity": ["interpolate", ["linear"], ["zoom"], 0.8, 1, 4.7, 1, 5.4, 0],
           "text-color": "#dbfff6",
           "text-halo-color": "#061423",
           "text-halo-width": 1.8,

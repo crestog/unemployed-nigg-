@@ -326,13 +326,17 @@ function desiredProjection(map: MapLibreMap): "globe" | "mercator" {
 }
 
 function updateProjectionAndPolarMode(map: MapLibreMap) {
-  if (!map.isStyleLoaded()) return;
+  if (!map.getStyle?.()) return;
   const nextProjection = desiredProjection(map);
   const currentProjection = map.getProjection?.()?.type;
-  if (currentProjection !== nextProjection) {
-    map.setProjection({ type: nextProjection });
+  try {
+    if (currentProjection !== nextProjection) {
+      map.setProjection({ type: nextProjection });
+    }
+    applyPolarLayerVisibility(map, nextProjection === "globe" && Math.abs(map.getCenter().lat) >= POLAR_CANVAS_LATITUDE);
+  } catch {
+    // MapLibre can expose the style object one tick before its style mutation APIs are ready.
   }
-  applyPolarLayerVisibility(map, nextProjection === "globe" && Math.abs(map.getCenter().lat) >= POLAR_CANVAS_LATITUDE);
 }
 
 function featureCollection(records: Array<Feature & { properties: Record<string, unknown> }>) {

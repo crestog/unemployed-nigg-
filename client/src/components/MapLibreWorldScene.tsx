@@ -926,7 +926,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !styleReady || !mapLoaded) return;
+    if (!map || !styleReady) return;
     if (globalMvt) {
       addGlobalMvtLayers(map, globalMvt);
       updateProjectionAndPolarMode(map);
@@ -936,7 +936,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
     sourceSetData(map, "atlas-adm1", featureCollection(adm1.map(asBoundaryFeature) as any));
     sourceSetData(map, "atlas-adm2", featureCollection(adm2.map(asBoundaryFeature) as any));
     sourceSetData(map, "atlas-localities", featureCollection(localities.map(asLocalityFeature) as any));
-  }, [adm1, adm2, countryLabels, countries, globalMvt, localities, mapLoaded, styleReady]);
+  }, [adm1, adm2, countryLabels, countries, globalMvt, localities, styleReady]);
 
   return       <div className="absolute inset-0 h-full w-full" data-maplibre-world>
         <div ref={containerRef} className="absolute inset-0 h-full w-full" />

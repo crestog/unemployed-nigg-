@@ -134,8 +134,17 @@ function drawPolarRing(
 ) {
   if (!ring.length) return;
   let previous: { x: number; y: number } | null = null;
-  let started = false;
+  let segment: Array<{ x: number; y: number }> = [];
   const steps = 8;
+  const flush = () => {
+    if (segment.length >= 3) {
+      context.moveTo(segment[0].x, segment[0].y);
+      segment.slice(1).forEach(point => context.lineTo(point.x, point.y));
+      context.closePath();
+    }
+    segment = [];
+    previous = null;
+  };
   ring.forEach((coordinate, index) => {
     const next = ring[(index + 1) % ring.length];
     if (!Array.isArray(coordinate) || !Array.isArray(next)) return;
@@ -148,22 +157,18 @@ function drawPolarRing(
         Number(coordinate[0]) + shortestDelta * ratio,
         Number(coordinate[1]) + (Number(next[1]) - Number(coordinate[1])) * ratio,
       );
-      if (!point) {
-        previous = null;
-        started = false;
+      const outside = !point || point.x < -width * 0.45 || point.x > width * 1.45 || point.y < -height * 0.45 || point.y > height * 1.45;
+      if (outside) {
+        flush();
         continue;
       }
       const seamJump = previous && Math.hypot(point.x - previous.x, point.y - previous.y) > Math.max(width, height) * 0.72;
-      if (!started || seamJump) {
-        context.moveTo(point.x, point.y);
-        started = true;
-      } else {
-        context.lineTo(point.x, point.y);
-      }
+      if (seamJump) flush();
+      segment.push(point);
       previous = point;
     }
   });
-  if (started) context.closePath();
+  flush();
 }
 
 function drawPolarGeometry(

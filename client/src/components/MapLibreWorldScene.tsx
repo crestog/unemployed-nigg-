@@ -153,17 +153,23 @@ function screenSamplesInsideGeometry(map: MapLibreMap, geometry: Geometry, width
   }
 }
 
-function projectPolarCoordinate(map: MapLibreMap, longitude: number, latitude: number) {
+function projectPolarCoordinate(map: MapLibreMap, longitude: number, latitude: number, width: number, height: number) {
   if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
   const center = map.getCenter();
   const centerLongitude = (center.lng * Math.PI) / 180;
   const centerLatitude = (center.lat * Math.PI) / 180;
   const pointLongitude = (wrapLongitude(longitude) * Math.PI) / 180;
   const pointLatitude = (Math.max(-89.999, Math.min(89.999, latitude)) * Math.PI) / 180;
-  const visibleDot = Math.sin(centerLatitude) * Math.sin(pointLatitude) + Math.cos(centerLatitude) * Math.cos(pointLatitude) * Math.cos(pointLongitude - centerLongitude);
-  if (visibleDot < -0.08) return null;
-  const point = map.project([wrapLongitude(longitude), Math.max(-89.999, Math.min(89.999, latitude))]);
-  return Number.isFinite(point.x) && Number.isFinite(point.y) ? point : null;
+  const deltaLongitude = pointLongitude - centerLongitude;
+  const visibleDot = Math.sin(centerLatitude) * Math.sin(pointLatitude) + Math.cos(centerLatitude) * Math.cos(pointLatitude) * Math.cos(deltaLongitude);
+  if (visibleDot < -0.02) return null;
+  const centerPoint = map.project(center);
+  const horizonPoint = map.project([wrapLongitude(center.lng + 89.99), 0]);
+  const measuredRadius = Math.hypot(horizonPoint.x - centerPoint.x, horizonPoint.y - centerPoint.y);
+  const radius = Number.isFinite(measuredRadius) && measuredRadius > 40 ? measuredRadius : Math.min(width, height) * 0.5;
+  const x = centerPoint.x + radius * Math.cos(pointLatitude) * Math.sin(deltaLongitude);
+  const y = centerPoint.y - radius * (Math.sin(pointLatitude) * Math.cos(centerLatitude) - Math.cos(pointLatitude) * Math.sin(centerLatitude) * Math.cos(deltaLongitude));
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
 }
 
 function drawPolarRing(
@@ -197,8 +203,10 @@ function drawPolarRing(
         map,
         Number(coordinate[0]) + shortestDelta * ratio,
         Number(coordinate[1]) + (Number(next[1]) - Number(coordinate[1])) * ratio,
+        width,
+        height,
       );
-      const outside = !point || point.x < -width * 0.45 || point.x > width * 1.45 || point.y < -height * 0.45 || point.y > height * 1.45;
+      const outside = !point;
       if (outside) {
         flush();
         continue;
@@ -256,15 +264,8 @@ function drawPolarCanvas(
   });
   const polarCountryIds = new Set(candidates.map(country => country.id));
   candidates.forEach(country => {
-    const polarCapFillsViewport = country.id === "010" && !north && map.getCenter().lat <= -80 && map.getZoom() <= 5.2;
     context.beginPath();
-    if (polarCapFillsViewport) {
-      const center = map.project(map.getCenter());
-      const globeRadius = Math.min(width, height) * 0.52;
-      context.arc(center.x, center.y, globeRadius, 0, Math.PI * 2);
-    } else {
-      drawPolarGeometry(context, map, country.feature.geometry, width, height);
-    }
+    drawPolarGeometry(context, map, country.feature.geometry, width, height);
     context.fillStyle = country.color;
     context.globalAlpha = country.id === "010" ? 0.76 : 0.62;
     context.fill("evenodd");
@@ -280,7 +281,7 @@ function drawPolarCanvas(
   context.textBaseline = "middle";
   labels.forEach(label => {
     if (!label.label || !polarCountryIds.has(label.id)) return;
-    const point = projectPolarCoordinate(map, label.longitude, label.latitude);
+    const point = projectPolarCoordinate(map, label.longitude, label.latitude, width, height);
     if (!point || point.x < -80 || point.x > width + 80 || point.y < -40 || point.y > height + 40) return;
     context.lineWidth = 3;
     context.strokeStyle = "rgba(6, 20, 35, 0.92)";

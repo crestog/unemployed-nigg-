@@ -342,6 +342,19 @@ function geographicPointInBounds(
   return longitudeVisible && latitude >= south && latitude <= north;
 }
 
+function geographicGeometryIntersectsBounds(
+  geometry: GeoJSON.Geometry,
+  bounds: [[number, number], [number, number]] | null | undefined
+) {
+  if (!bounds) return false;
+  const [[west, south], [east, north]] = bounds;
+  const [[minLongitude, minLatitude], [maxLongitude, maxLatitude]] = geoBounds({ type: "Feature", properties: {}, geometry } as GeoJSON.Feature);
+  if (maxLatitude < south || minLatitude > north) return false;
+  return west <= east
+    ? maxLongitude >= west && minLongitude <= east
+    : maxLongitude >= west || minLongitude <= east;
+}
+
 export default function WorldMapExplorer() {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const restoredRef = useRef(false);
@@ -864,10 +877,9 @@ export default function WorldMapExplorer() {
   }, [indiaAdm1Render, mapZoom]);
   const visibleIndiaAdm2 = useMemo(() => {
     if (mapZoom < 5.15) return [];
-    const candidates = indiaAdm2Render.filter(item => {
-      const [longitude, latitude] = geoCentroid(boundaryToFeature(item.boundary));
-      return geographicPointInBounds(longitude, latitude, viewportGeoBounds);
-    });
+    const candidates = indiaAdm2Render.filter(item =>
+      geographicGeometryIntersectsBounds(item.boundary.geometry, viewportGeoBounds)
+    );
     const budget = mapZoom < 7.5 ? 260 : mapZoom < 11 ? 620 : 1100;
     return candidates
       .sort(

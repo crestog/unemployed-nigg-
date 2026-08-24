@@ -61,6 +61,9 @@ export type MapLibreWorldSceneHandle = {
 type Props = {
   initialView?: ViewState;
   countries: CountryRecord[];
+  /** Country geometry used only by the globe-safe polar canvas. Includes Antarctica. */
+  polarCountries: CountryRecord[];
+  polarCountryLabels: CountryLabelRecord[];
   countryLabels: CountryLabelRecord[];
   adm1: BoundaryRecord[];
   adm2: BoundaryRecord[];
@@ -76,6 +79,207 @@ const EMPTY_COLLECTION = (): GeoJSON.FeatureCollection => ({
   type: "FeatureCollection",
   features: [],
 });
+
+const MAP_MAX_ZOOM = 24;
+const POLAR_CANVAS_LATITUDE = 70;
+const POLAR_CANVAS_SOURCE_LATITUDE = 65;
+const POLAR_CANVAS_STROKE = "rgba(7, 22, 34, 0.82)";
+
+function geometryLatitudeBounds(geometry: Geometry): [number, number] {
+  let min = 90;
+  let max = -90;
+  const visit = (coordinates: any): void => {
+    if (!Array.isArray(coordinates)) return;
+    if (typeof coordinates[0] === "number") {
+      const latitude = Number(coordinates[1]);
+      if (Number.isFinite(latitude)) {
+        min = Math.min(min, latitude);
+        max = Math.max(max, latitude);
+      }
+      return;
+    }
+    coordinates.forEach(visit);
+  };
+  if (geometry.type === "GeometryCollection") {
+    geometry.geometries.forEach(child => visit((child as any).coordinates));
+  } else {
+    visit((geometry as any).coordinates);
+  }
+  return min <= max ? [min, max] : [0, 0];
+}
+
+function wrapLongitude(longitude: number) {
+  return ((((longitude + 180) % 360) + 360) % 360) - 180;
+}
+
+function projectPolarCoordinate(map: MapLibreMap, longitude: number, latitude: number) {
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
+  const center = map.getCenter();
+  const centerLongitude = (center.lng * Math.PI) / 180;
+  const centerLatitude = (center.lat * Math.PI) / 180;
+  const pointLongitude = (wrapLongitude(longitude) * Math.PI) / 180;
+  const pointLatitude = (Math.max(-89.999, Math.min(89.999, latitude)) * Math.PI) / 180;
+  const visibleDot = Math.sin(centerLatitude) * Math.sin(pointLatitude) + Math.cos(centerLatitude) * Math.cos(pointLatitude) * Math.cos(pointLongitude - centerLongitude);
+  if (visibleDot < -0.08) return null;
+  const point = map.project([wrapLongitude(longitude), Math.max(-89.999, Math.min(89.999, latitude))]);
+  return Number.isFinite(point.x) && Number.isFinite(point.y) ? point : null;
+}
+
+function drawPolarRing(
+  context: CanvasRenderingContext2D,
+  map: MapLibreMap,
+  ring: any[],
+  width: number,
+  height: number,
+) {
+  if (!ring.length) return;
+  let previous: { x: number; y: number } | null = null;
+  let started = false;
+  const steps = 8;
+  ring.forEach((coordinate, index) => {
+    const next = ring[(index + 1) % ring.length];
+    if (!Array.isArray(coordinate) || !Array.isArray(next)) return;
+    for (let step = index === 0 ? 0 : 1; step <= steps; step += 1) {
+      const ratio = step / steps;
+      const longitudeDelta = Number(next[0]) - Number(coordinate[0]);
+      const shortestDelta = longitudeDelta > 180 ? longitudeDelta - 360 : longitudeDelta < -180 ? longitudeDelta + 360 : longitudeDelta;
+      const point = projectPolarCoordinate(
+        map,
+        Number(coordinate[0]) + shortestDelta * ratio,
+        Number(coordinate[1]) + (Number(next[1]) - Number(coordinate[1])) * ratio,
+      );
+      if (!point) {
+        previous = null;
+        started = false;
+        continue;
+      }
+      const seamJump = previous && Math.hypot(point.x - previous.x, point.y - previous.y) > Math.max(width, height) * 0.72;
+      if (!started || seamJump) {
+        context.moveTo(point.x, point.y);
+        started = true;
+      } else {
+        context.lineTo(point.x, point.y);
+      }
+      previous = point;
+    }
+  });
+  if (started) context.closePath();
+}
+
+function drawPolarGeometry(
+  context: CanvasRenderingContext2D,
+  map: MapLibreMap,
+  geometry: Geometry,
+  width: number,
+  height: number,
+) {
+  if (geometry.type === "Polygon") {
+    geometry.coordinates.forEach(ring => drawPolarRing(context, map, ring, width, height));
+  } else if (geometry.type === "MultiPolygon") {
+    geometry.coordinates.forEach(polygon => polygon.forEach(ring => drawPolarRing(context, map, ring, width, height)));
+  } else if (geometry.type === "GeometryCollection") {
+    geometry.geometries.forEach(child => drawPolarGeometry(context, map, child, width, height));
+  }
+}
+
+function drawPolarCanvas(
+  canvas: HTMLCanvasElement,
+  map: MapLibreMap,
+  countries: CountryRecord[],
+  labels: CountryLabelRecord[],
+) {
+  const rect = canvas.getBoundingClientRect();
+  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+  const width = Math.max(1, rect.width);
+  const height = Math.max(1, rect.height);
+  const backingWidth = Math.max(1, Math.round(width * pixelRatio));
+  const backingHeight = Math.max(1, Math.round(height * pixelRatio));
+  if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+    canvas.width = backingWidth;
+    canvas.height = backingHeight;
+  }
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, width, height);
+
+  const north = map.getCenter().lat >= 0;
+  const candidates = countries.filter(country => {
+    const [minLatitude, maxLatitude] = geometryLatitudeBounds(country.feature.geometry);
+    return north ? maxLatitude >= POLAR_CANVAS_SOURCE_LATITUDE : minLatitude <= -POLAR_CANVAS_SOURCE_LATITUDE;
+  });
+  const polarCountryIds = new Set(candidates.map(country => country.id));
+  candidates.forEach(country => {
+    context.beginPath();
+    drawPolarGeometry(context, map, country.feature.geometry, width, height);
+    context.fillStyle = country.color;
+    context.globalAlpha = country.id === "010" ? 0.76 : 0.62;
+    context.fill("evenodd");
+    context.strokeStyle = POLAR_CANVAS_STROKE;
+    context.lineWidth = Math.max(0.65, Math.min(1.55, map.getZoom() * 0.12));
+    context.globalAlpha = 0.9;
+    context.stroke();
+  });
+
+  const labelSize = Math.max(10, Math.min(18, 10 + (map.getZoom() - 1.4) * 1.8));
+  context.font = `600 ${labelSize}px "Open Sans", Arial, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  labels.forEach(label => {
+    if (!label.label || !polarCountryIds.has(label.id)) return;
+    const point = projectPolarCoordinate(map, label.longitude, label.latitude);
+    if (!point || point.x < -80 || point.x > width + 80 || point.y < -40 || point.y > height + 40) return;
+    context.lineWidth = 3;
+    context.strokeStyle = "rgba(6, 20, 35, 0.92)";
+    context.strokeText(label.name, point.x, point.y);
+    context.fillStyle = "#dbfff6";
+    context.fillText(label.name, point.x, point.y);
+  });
+  context.globalAlpha = 1;
+}
+
+function isPolarCamera(map: MapLibreMap) {
+  return map.getProjection?.()?.type === "globe" && Math.abs(map.getCenter().lat) >= POLAR_CANVAS_LATITUDE;
+}
+
+function applyPolarLayerVisibility(map: MapLibreMap, polar: boolean) {
+  const layers = map.getStyle().layers ?? [];
+  layers.forEach(layer => {
+    const hideInPolar =
+      layer.id === "atlas-country-fill" ||
+      layer.id === "atlas-country-line" ||
+      layer.id === "atlas-country-label" ||
+      layer.id === "atlas-locality-label" ||
+      /^atlas-adm[12]-(fill|line|label)$/.test(layer.id) ||
+      /^atlas-global-adm[1-5]-(fill|line|label)$/.test(layer.id) ||
+      layer.id === "atlas-global-places-label";
+    if (!hideInPolar || !map.getLayer(layer.id)) return;
+    const visibility = polar ? "none" : "visible";
+    if (map.getLayoutProperty(layer.id, "visibility") !== visibility) {
+      map.setLayoutProperty(layer.id, "visibility", visibility);
+    }
+  });
+}
+
+function globalLabelSize(zoom: number) {
+  return Math.min(22, 9 + zoom * 0.82);
+}
+
+function desiredProjection(map: MapLibreMap): "globe" | "mercator" {
+  const centerLatitude = Math.abs(map.getCenter().lat);
+  if (centerLatitude >= POLAR_CANVAS_LATITUDE) return "globe";
+  return map.getZoom() >= 4.6 ? "mercator" : "globe";
+}
+
+function updateProjectionAndPolarMode(map: MapLibreMap) {
+  if (!map.isStyleLoaded()) return;
+  const nextProjection = desiredProjection(map);
+  const currentProjection = map.getProjection?.()?.type;
+  if (currentProjection !== nextProjection) {
+    map.setProjection({ type: nextProjection });
+  }
+  applyPolarLayerVisibility(map, nextProjection === "globe" && Math.abs(map.getCenter().lat) >= POLAR_CANVAS_LATITUDE);
+}
 
 function featureCollection(records: Array<Feature & { properties: Record<string, unknown> }>) {
   return { type: "FeatureCollection", features: records } as GeoJSON.FeatureCollection;
@@ -193,13 +397,13 @@ function atlasStyle(input: {
         type: "symbol",
         source: "atlas-country-labels",
         minzoom: 0.8,
-        maxzoom: 3.55,
+        maxzoom: 5.4,
         layout: {
           "symbol-placement": "point",
           "text-field": ["get", "name"],
           "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 0, 1],
           "text-font": ["Open Sans Semibold"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 0.8, 11, 2, 15, 3.55, 18],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 0.8, 11, 2.2, 15, 5.4, 19],
           "text-max-width": 9,
           "text-padding": 5,
           "text-allow-overlap": false,
@@ -209,11 +413,11 @@ function atlasStyle(input: {
           "text-letter-spacing": 0.015,
         },
         paint: {
+          "text-opacity": ["case", ["boolean", ["get", "label"], true], ["interpolate", ["linear"], ["zoom"], 0.8, 1, 4.7, 1, 5.4, 0], 0],
           "text-color": "#dbfff6",
           "text-halo-color": "#061423",
           "text-halo-width": 1.8,
           "text-halo-blur": 0.25,
-          "text-opacity": ["case", ["boolean", ["get", "label"], true], 1, 0],
         },
       },
       {
@@ -238,16 +442,17 @@ function atlasStyle(input: {
         type: "symbol",
         source: "atlas-adm1",
         minzoom: 3.25,
-        maxzoom: 7.6,
+        maxzoom: 8.6,
         layout: {
           "symbol-placement": "point",
           "text-field": ["get", "name"],
           "text-font": ["Open Sans Semibold"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 3.25, 11, 6, 15, 7.6, 17],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 3.25, 11, 5.8, 15, 8.6, 18],
           "text-max-width": 8,
-          "text-padding": 4,
-          "text-allow-overlap": false,
-          "text-ignore-placement": false,
+          "text-padding": 3,
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+          "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 0, 1],
         },
         filter: ["==", ["get", "label"], true],
         paint: { "text-color": "#ffe0aa", "text-halo-color": "#071622", "text-halo-width": 1.5 },
@@ -271,32 +476,20 @@ function atlasStyle(input: {
         type: "symbol",
         source: "atlas-adm2",
         minzoom: 6.1,
-        maxzoom: 12,
+        maxzoom: 13,
         layout: {
           "symbol-placement": "point",
           "text-field": ["get", "name"],
           "text-font": ["Open Sans Semibold"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 6.1, 9, 10, 12, 12, 14],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 6.1, 14, 10, 16, 13, 18],
           "text-max-width": 7,
-          "text-padding": 3,
-          "text-allow-overlap": false,
-          "text-ignore-placement": false,
+          "text-padding": 2,
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+          "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 0, 1],
         },
         filter: ["==", ["get", "label"], true],
         paint: { "text-color": "#ffe7bf", "text-halo-color": "#101516", "text-halo-width": 1.2 },
-      },
-      {
-        id: "atlas-locality-circle",
-        type: "circle",
-        source: "atlas-localities",
-        minzoom: 8.2,
-        paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8.2, 2.2, 12, 4.3, 18, 6.8],
-          "circle-color": ["case", ["boolean", ["get", "selected"], false], "#ffd28a", "#45d7c0"],
-          "circle-stroke-color": "#061423",
-          "circle-stroke-width": 1,
-          "circle-opacity": 0.92,
-        },
       },
       {
         id: "atlas-locality-label",
@@ -306,12 +499,13 @@ function atlasStyle(input: {
         layout: {
           "text-field": ["get", "name"],
           "text-font": ["Open Sans Semibold"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 9, 9, 14, 12, 18, 15],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 9, 14, 14, 16, 24, 19],
           "text-offset": [0.8, 0],
           "text-anchor": "left",
-          "text-padding": 3,
-          "text-allow-overlap": false,
-          "text-ignore-placement": false,
+          "text-padding": 2,
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+          "symbol-sort-key": ["-", 1000000000, ["coalesce", ["get", "population"], 0]],
         },
         filter: ["==", ["get", "label"], true],
         paint: { "text-color": "#9fffee", "text-halo-color": "#061423", "text-halo-width": 1.2 },
@@ -363,7 +557,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
     const nextKey = keys[index + 1];
     const nextStart = nextKey
       ? Math.max(metadata.tileZoom + 0.4, manifest.layers[nextKey].tileZoom - 0.25)
-      : 22;
+      : MAP_MAX_ZOOM;
     const minzoom = metadata.tileZoom;
 
     if (!map.getSource(sourceId)) {
@@ -396,10 +590,10 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
         "source-layer": sourceLayer,
         filter: sourceFilter as any,
         minzoom,
-        maxzoom: nextStart,
+        maxzoom: Math.min(MAP_MAX_ZOOM, nextStart),
         paint: {
           "fill-color": colors[index % colors.length],
-          "fill-opacity": ["interpolate", ["linear"], ["zoom"], minzoom, 0.05, minzoom + 0.8, 0.12, nextStart, 0],
+          "fill-opacity": ["interpolate", ["linear"], ["zoom"], minzoom, 0.05, minzoom + 0.8, 0.12, nextStart, nextKey ? 0 : 0.1],
         },
       }, insertBefore);
     }
@@ -411,11 +605,11 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
         "source-layer": sourceLayer,
         filter: sourceFilter as any,
         minzoom,
-        maxzoom: Math.min(22, nextStart + 0.2),
+        maxzoom: Math.min(MAP_MAX_ZOOM, nextStart + 0.2),
         paint: {
           "line-color": colors[index % colors.length],
           "line-width": ["interpolate", ["linear"], ["zoom"], minzoom, 0.25, minzoom + 2, 0.9],
-          "line-opacity": ["interpolate", ["linear"], ["zoom"], minzoom, 0.45, nextStart, 0],
+          "line-opacity": ["interpolate", ["linear"], ["zoom"], minzoom, 0.45, nextStart, nextKey ? 0 : 0.9],
         },
       }, insertBefore);
     }
@@ -427,17 +621,19 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
         "source-layer": labelSourceLayer,
         filter: ["all", sourceFilter, ["==", ["get", "label"], true]] as any,
         minzoom: minzoom + 0.1,
-        maxzoom: nextStart,
+        maxzoom: Math.min(MAP_MAX_ZOOM, nextKey ? Math.max(nextStart + 0.4, manifest.layers[nextKey].tileZoom + 0.15) : MAP_MAX_ZOOM),
         layout: {
           "text-field": ["get", "name"],
           "text-font": ["Open Sans Semibold"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], minzoom + 0.1, Math.max(7, 12 - level), minzoom + 2.4, Math.max(9, 15 - level * 0.4)],
+          "text-size": ["interpolate", ["linear"], ["zoom"], minzoom + 0.1, globalLabelSize(minzoom + 0.1), minzoom + 2.4, globalLabelSize(minzoom + 2.4), MAP_MAX_ZOOM, globalLabelSize(MAP_MAX_ZOOM)],
           "text-max-width": 7,
           "text-padding": 2,
-          "text-allow-overlap": false,
-          "text-ignore-placement": false,
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+          "text-variable-anchor": ["center", "top", "bottom", "left", "right"],
+          "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 0, 1],
         },
-        paint: { "text-color": "#d6f4e8", "text-halo-color": "#061423", "text-halo-width": 1.1 },
+        paint: { "text-opacity": ["interpolate", ["linear"], ["zoom"], minzoom, 0, minzoom + 0.35, 1, Math.min(MAP_MAX_ZOOM, nextKey ? Math.max(nextStart + 0.4, manifest.layers[nextKey].tileZoom + 0.15) : MAP_MAX_ZOOM), nextKey ? 0 : 1], "text-color": "#d6f4e8", "text-halo-color": "#061423", "text-halo-width": 1.1 },
       }, insertBefore);
     }
   });
@@ -452,24 +648,6 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       promoteId: "atlasId",
     });
   }
-  if (places && !map.getLayer("atlas-global-places-circle")) {
-    map.addLayer({
-      id: "atlas-global-places-circle",
-      type: "circle",
-      source: "atlas-global-places",
-      "source-layer": places.mvtSourceLayer ?? "labels",
-      minzoom: places.tileZoom,
-      maxzoom: 22,
-      filter: ["all", ["has", "countryCode"], ["!=", ["get", "countryCode"], "IN"], ["==", ["get", "label"], true]] as any,
-      paint: {
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], places.tileZoom, 1.2, places.tileZoom + 4, 3.2, 18, 5],
-        "circle-color": "#45d7c0",
-        "circle-stroke-color": "#061423",
-        "circle-stroke-width": 0.8,
-        "circle-opacity": 0.75,
-      },
-    }, insertBefore);
-  }
   if (places && !map.getLayer("atlas-global-places-label")) {
     map.addLayer({
       id: "atlas-global-places-label",
@@ -477,17 +655,19 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
       source: "atlas-global-places",
       "source-layer": places.mvtSourceLayer ?? "labels",
       minzoom: places.tileZoom + 0.5,
-      maxzoom: 22,
+      maxzoom: MAP_MAX_ZOOM,
       filter: ["all", ["has", "countryCode"], ["!=", ["get", "countryCode"], "IN"], ["==", ["get", "label"], true]] as any,
       layout: {
         "text-field": ["get", "name"],
         "text-font": ["Open Sans Semibold"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], places.tileZoom + 0.5, 8, 16, 12, 22, 15],
-        "text-offset": [0.8, 0],
-        "text-anchor": "left",
-        "text-padding": 2,
-        "text-allow-overlap": false,
-        "text-ignore-placement": false,
+        "text-size": ["interpolate", ["linear"], ["zoom"], places.tileZoom + 0.5, 10, 16, 14, MAP_MAX_ZOOM, 18],
+        "text-offset": [0, 0],
+        "text-anchor": "center",
+        "text-padding": 1,
+        "text-allow-overlap": true,
+        "text-ignore-placement": true,
+        "text-variable-anchor": ["center", "top", "bottom", "left", "right"],
+        "symbol-sort-key": ["-", 1000000000, ["coalesce", ["get", "population"], 0]],
       },
       paint: { "text-color": "#9fffee", "text-halo-color": "#061423", "text-halo-width": 1.1 },
     }, insertBefore);
@@ -496,11 +676,16 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
 
 
 const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function MapLibreWorldScene(
-  { initialView, countries, countryLabels, adm1, adm2, localities, globalMvt, spinEnabled = true, onViewChange, onPick, onUnavailable },
+  { initialView, countries, polarCountries, polarCountryLabels, countryLabels, adm1, adm2, localities, globalMvt, spinEnabled = true, onViewChange, onPick, onUnavailable },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const polarCanvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const polarCountriesRef = useRef(polarCountries);
+  const polarLabelsRef = useRef(polarCountryLabels);
+  polarCountriesRef.current = polarCountries;
+  polarLabelsRef.current = polarCountryLabels;
   const baseZoomRef = useRef(1.25);
   const onViewChangeRef = useRef(onViewChange);
   const onPickRef = useRef(onPick);
@@ -570,7 +755,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         zoom: initialView?.zoom ?? 1.25,
         bearing: initialView?.bearing ?? 0,
         pitch: initialView?.pitch ?? 0,
-        maxZoom: 22,
+        maxZoom: MAP_MAX_ZOOM,
         minZoom: 0,
         renderWorldCopies: false,
         attributionControl: false,
@@ -583,22 +768,45 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       map.touchZoomRotate.enableRotation();
       map.dragRotate.enable();
       map.touchPitch.disable();
+      const redrawPolarCanvas = () => {
+        const canvas = polarCanvasRef.current;
+        if (!canvas) return;
+        const polar = isPolarCamera(map);
+        canvas.style.opacity = polar ? "1" : "0";
+        canvas.style.visibility = polar ? "visible" : "hidden";
+        if (polar) {
+          drawPolarCanvas(canvas, map, polarCountriesRef.current, polarLabelsRef.current);
+        } else {
+          const context = canvas.getContext("2d");
+          context?.clearRect(0, 0, canvas.width, canvas.height);
+        }
+      };
+      const syncCamera = () => {
+        updateProjectionAndPolarMode(map);
+        redrawPolarCanvas();
+        onViewChangeRef.current?.(toView(map));
+      };
       map.on("load", () => {
         setMapLoaded(true);
+        syncCamera();
       });
       map.on("style.load", () => {
         map.setProjection({ type: "globe" });
         map.fitBounds([[-180, -58], [180, 84]], { padding: { top: 78, right: 36, bottom: 40, left: 36 }, duration: 0 });
         baseZoomRef.current = map.getZoom();
         if (initialView) map.jumpTo(initialView);
+        updateProjectionAndPolarMode(map);
         setStyleReady(true);
+        redrawPolarCanvas();
         onViewChangeRef.current?.(toView(map));
       });
-      map.on("move", () => onViewChangeRef.current?.(toView(map)));
+      map.on("move", syncCamera);
+      map.on("render", redrawPolarCanvas);
+      map.on("resize", redrawPolarCanvas);
       map.on("click", event => {
         const feature = map.queryRenderedFeatures(event.point).find((candidate: MapGeoJSONFeature) => {
           const id = candidate.layer.id;
-          return id === "atlas-locality-circle" || id === "atlas-global-places-circle" || id === "atlas-country-fill" || /atlas-global-adm[1-5]-fill$/.test(id) || /^atlas-adm[12]-fill$/.test(id);
+          return id === "atlas-locality-label" || id === "atlas-global-places-label" || id === "atlas-country-fill" || /atlas-global-adm[1-5]-fill$/.test(id) || /^atlas-adm[12]-fill$/.test(id);
         });
         const id = feature?.properties?.atlasId ?? feature?.id;
         if (!feature || id === undefined || id === null) return;
@@ -660,7 +868,10 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady || !mapLoaded) return;
-    if (globalMvt) addGlobalMvtLayers(map, globalMvt);
+    if (globalMvt) {
+      addGlobalMvtLayers(map, globalMvt);
+      updateProjectionAndPolarMode(map);
+    }
     sourceSetData(map, "atlas-countries", featureCollection(countries.map(asCountryFeature) as any));
     sourceSetData(map, "atlas-country-labels", featureCollection(countryLabels.map(asCountryLabelFeature) as any));
     sourceSetData(map, "atlas-adm1", featureCollection(adm1.map(asBoundaryFeature) as any));
@@ -668,7 +879,10 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
     sourceSetData(map, "atlas-localities", featureCollection(localities.map(asLocalityFeature) as any));
   }, [adm1, adm2, countryLabels, countries, globalMvt, localities, mapLoaded, styleReady]);
 
-  return <div ref={containerRef} className="absolute inset-0 h-full w-full" data-maplibre-world />;
+  return       <div className="absolute inset-0 h-full w-full" data-maplibre-world>
+        <div ref={containerRef} className="absolute inset-0 h-full w-full" />
+        <canvas ref={polarCanvasRef} className="pointer-events-none absolute inset-0 h-full w-full opacity-0" aria-hidden="true" />
+      </div>;
 });
 
 MapLibreWorldScene.displayName = "MapLibreWorldScene";

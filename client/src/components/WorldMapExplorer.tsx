@@ -199,13 +199,14 @@ const mapCollection = feature(
   (worldTopology as unknown as { objects: { countries: never } }).objects
     .countries
 ) as unknown as GeoJSON.FeatureCollection<GeoJSON.Geometry, { name?: string }>;
-const countryFeatures = (mapCollection.features as MapFeature[]).filter(country => {
+const allCountryFeatures = mapCollection.features as MapFeature[];
+const countryFeatures = allCountryFeatures.filter(country => {
   const id = String(country.id ?? "").padStart(3, "0");
   const name = String(country.properties?.name ?? "").toLowerCase();
-  // MapLibre globe renders ordinary Web Mercator vector geometry; the
-  // Antarctica polygon is a polar cap, not a valid low-zoom country fill for
-  // this source contract. Global ADM detail has the same explicit policy in
-  // the Kaggle builder. Do not let it create a second polar artifact.
+  // MapLibre globe cannot safely carry ordinary Mercator vector geometry into
+  // a pole. Keep Antarctica out of the normal GeoJSON fill, then pass the
+  // complete topology to MapLibreWorldScene's camera-projected polar path so
+  // the pole is rendered once, from the source geometry, without a tile seam.
   return id !== "010" && name !== "antarctica";
 });
 const safeCountryLabelAnchor = (country: MapFeature): [number, number] | null => {
@@ -682,7 +683,13 @@ export default function WorldMapExplorer() {
       }),
     [indiaLocalityRecords, projection]
   );
-  const mapZoom = mapView?.zoom ?? 0;
+  const mapZoom = mapView?.zoom ?? initialMapView?.zoom ?? 1.25;
+  const zoomScale = 2 ** mapZoom;
+  const zoomScaleLabel = zoomScale >= 1000000
+    ? `${(zoomScale / 1000000).toFixed(1)}M×`
+    : zoomScale >= 1000
+      ? `${(zoomScale / 1000).toFixed(1)}k×`
+      : `${zoomScale.toFixed(1)}×`;
   const indiaInView = useMemo(() => {
     if (!mapView) return false;
     const angularDistance = geoDistance(mapView.center, [79, 23]) * (180 / Math.PI);
@@ -807,7 +814,7 @@ export default function WorldMapExplorer() {
     const labels = new Set<string>();
     const indiaDetailPending =
       indiaInView && mapZoom >= INDIA_ADM1_ZOOM && indiaAdm1Features.length === 0;
-    if (mapZoom > 3.55 && !indiaDetailPending) return labels;
+    if (mapZoom > 5.4 && !indiaDetailPending) return labels;
     [...nodes]
       .sort((a, b) => {
         if (a.id === selectedId) return -1;
@@ -1308,6 +1315,33 @@ export default function WorldMapExplorer() {
       selected: item.selected,
     }] : [];
   }), [countryLayers]);
+  const polarCountryLayers = useMemo(() => {
+    const palette = ["#6e8f78", "#9a9d6d", "#7894a0", "#a08368", "#7d9270", "#8a8b9f", "#b09a70", "#6c8f88"];
+    return allCountryFeatures.flatMap((country, index) => {
+      const id = topologyId(country);
+      const node = nodeById.get(id);
+      return [{
+        id,
+        name: node?.name ?? country.properties?.name ?? (id === "010" ? "Antarctica" : "Country"),
+        feature: country as GeoJSON.Feature,
+        color: palette[index % palette.length],
+        visible: true,
+        label: true,
+        selected: selectedId === id,
+      }];
+    });
+  }, [countryLabelIds, nodeById, selectedId]);
+  const polarCountryLabelLayers = useMemo(() => polarCountryLayers.flatMap(item => {
+    const anchor = item.id === "010" ? [0, -82] as [number, number] : safeCountryLabelAnchor(item.feature as MapFeature);
+    return anchor ? [{
+      id: item.id,
+      name: item.name,
+      longitude: anchor[0],
+      latitude: anchor[1],
+      label: item.label,
+      selected: item.selected,
+    }] : [];
+  }), [polarCountryLayers]);
   const adm1Layers = useMemo(() => semanticAdm1.flatMap(item => item.geometry ? [{
     id: item.id,
     name: item.name,
@@ -1428,6 +1462,8 @@ export default function WorldMapExplorer() {
           ref={mapSceneRef}
           initialView={initialMapView}
           countries={countryLayers}
+          polarCountries={polarCountryLayers}
+          polarCountryLabels={polarCountryLabelLayers}
           countryLabels={countryLabelLayers}
           globalMvt={globalMvtManifest}
           spinEnabled={spinEnabled && !reducedMotion}
@@ -1454,6 +1490,9 @@ export default function WorldMapExplorer() {
           <span className="text-[#526b84]">/</span>
           <span className="font-mono text-[9px] uppercase tracking-[.16em] text-[#9db2c8]">
             {nearbyMode ? "nearby fields" : currentGeoLevel.toLowerCase()}
+          </span>
+          <span className="rounded-full border border-[#35536f] bg-[#112b3d] px-2 py-1 font-mono text-[9px] uppercase tracking-[.12em] text-[#8fe7d8]" aria-live="polite" title="Live MapLibre zoom level and world-scale multiplier">
+            Z {mapZoom.toFixed(2)} · {zoomScaleLabel}
           </span>
           {selected && !geoSelection && (
             <>
@@ -1525,7 +1564,7 @@ export default function WorldMapExplorer() {
           Drag to roam. Zoom at the cursor. Country labels give way to
           precomputed worldwide administrative boundaries at the deepest
           level available for the country, with source-backed place references
-          rendered as a separate layer when available.
+          rendered as text-only labels when available.
         </p>
         <section className="mt-4 border border-[#294761] bg-[#0d2234]/80 p-3">
           <div className="flex items-center justify-between gap-3 font-mono text-[9px] uppercase tracking-[.12em] text-[#8fe7d8]">
@@ -1542,7 +1581,7 @@ export default function WorldMapExplorer() {
                 <span>{globalMvtManifest.layers.adm2.featureCount.toLocaleString()} ADM2</span>
               </div>
               <p className="mt-2 text-[10px] leading-4 text-[#8297ac]">
-                {Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).length ? `Deep administrative levels available: ${Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).sort().join(", ").toUpperCase()}.` : "No global deep administrative levels are present in this release yet."} Global place points remain a separate source layer. {globalMvtManifest.geometryPolicy?.safeVectorLatitude != null ? `Detail above ${globalMvtManifest.geometryPolicy.safeVectorLatitude}° latitude is omitted by the Web Mercator policy.` : "Polar detail policy is not present in this older release."} <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
+                {Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).length ? `Deep administrative levels available: ${Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).sort().join(", ").toUpperCase()}.` : "No global deep administrative levels are present in this release yet."} Global place names remain a separate source layer and render as text only; Atlas does not draw place-point markers. {globalMvtManifest.geometryPolicy?.safeVectorLatitude != null ? `Deep administrative vectors above ${globalMvtManifest.geometryPolicy.safeVectorLatitude}° latitude follow the Web Mercator policy; the globe-safe overview still shows high-latitude countries and Antarctica from the bundled Natural Earth-derived world-atlas geometry.` : "Polar detail policy is not present in this older release."} <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
               </p>
             </>
           ) : (
@@ -1656,6 +1695,9 @@ export default function WorldMapExplorer() {
           )}
         </div>
         <div className="mt-2 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 sm:flex-wrap">
+          <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]" aria-live="polite">
+            Zoom {mapZoom.toFixed(2)} · scale {zoomScaleLabel}
+          </span>
           <span className="rounded-full border border-[#35536f] bg-[#0b1a2a]/92 px-3 py-1.5 font-mono text-[9px] uppercase tracking-[.12em] text-[#8da4b8]">
             Drag to roam
           </span>

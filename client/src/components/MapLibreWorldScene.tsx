@@ -112,6 +112,47 @@ function wrapLongitude(longitude: number) {
   return ((((longitude + 180) % 360) + 360) % 360) - 180;
 }
 
+function pointInRing(longitude: number, latitude: number, ring: any[]) {
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+    const current = ring[index];
+    const prior = ring[previous];
+    if (!Array.isArray(current) || !Array.isArray(prior)) continue;
+    const currentLongitude = Number(current[0]);
+    const priorLongitude = Number(prior[0]);
+    const longitudeDelta = currentLongitude - priorLongitude;
+    const adjustedLongitude = longitude + (Math.abs(longitudeDelta) > 180 ? (longitudeDelta > 0 ? 360 : -360) : 0);
+    const adjustedPriorLongitude = priorLongitude;
+    const crosses = ((Number(current[1]) > latitude) !== (Number(prior[1]) > latitude)) &&
+      longitude < (adjustedPriorLongitude + (adjustedLongitude - adjustedPriorLongitude) * (latitude - Number(prior[1])) / (Number(current[1]) - Number(prior[1])));
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function geometryContainsPoint(geometry: Geometry, longitude: number, latitude: number): boolean {
+  if (geometry.type === "Polygon") {
+    return geometry.coordinates.length > 0 && pointInRing(longitude, latitude, geometry.coordinates[0]) && geometry.coordinates.slice(1).every(ring => !pointInRing(longitude, latitude, ring));
+  }
+  if (geometry.type === "MultiPolygon") {
+    return geometry.coordinates.some(polygon => polygon.length > 0 && pointInRing(longitude, latitude, polygon[0]) && polygon.slice(1).every(ring => !pointInRing(longitude, latitude, ring)));
+  }
+  if (geometry.type === "GeometryCollection") return geometry.geometries.some(child => geometryContainsPoint(child, longitude, latitude));
+  return false;
+}
+
+function screenSamplesInsideGeometry(map: MapLibreMap, geometry: Geometry, width: number, height: number) {
+  const samples = [[width * 0.08, height * 0.08], [width * 0.5, height * 0.08], [width * 0.92, height * 0.08], [width * 0.08, height * 0.5], [width * 0.5, height * 0.5], [width * 0.92, height * 0.5], [width * 0.08, height * 0.92], [width * 0.5, height * 0.92], [width * 0.92, height * 0.92]];
+  try {
+    return samples.every(([x, y]) => {
+      const coordinate = map.unproject([x, y]);
+      return geometryContainsPoint(geometry, coordinate.lng, coordinate.lat);
+    });
+  } catch {
+    return false;
+  }
+}
+
 function projectPolarCoordinate(map: MapLibreMap, longitude: number, latitude: number) {
   if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
   const center = map.getCenter();
@@ -215,8 +256,15 @@ function drawPolarCanvas(
   });
   const polarCountryIds = new Set(candidates.map(country => country.id));
   candidates.forEach(country => {
+    const polarCapFillsViewport = country.id === "010" && north === false && screenSamplesInsideGeometry(map, country.feature.geometry, width, height);
     context.beginPath();
-    drawPolarGeometry(context, map, country.feature.geometry, width, height);
+    if (polarCapFillsViewport) {
+      const center = map.project(map.getCenter());
+      const globeRadius = Math.min(width, height) * 0.52;
+      context.arc(center.x, center.y, globeRadius, 0, Math.PI * 2);
+    } else {
+      drawPolarGeometry(context, map, country.feature.geometry, width, height);
+    }
     context.fillStyle = country.color;
     context.globalAlpha = country.id === "010" ? 0.76 : 0.62;
     context.fill("evenodd");

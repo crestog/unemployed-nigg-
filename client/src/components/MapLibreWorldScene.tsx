@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { geoContains, geoOrthographic, geoPath } from "d3-geo";
 import { LngLatBounds, Map as MapLibreMapClass, setWorkerUrl } from "maplibre-gl";
 import type { GeoJSONSource, Map as MapLibreMap, MapGeoJSONFeature, StyleSpecification } from "maplibre-gl";
 import type { GlobalMvtManifest } from "@/lib/worldMvt";
@@ -61,9 +62,6 @@ export type MapLibreWorldSceneHandle = {
 type Props = {
   initialView?: ViewState;
   countries: CountryRecord[];
-  /** Country geometry used only by the globe-safe polar canvas. Includes Antarctica. */
-  polarCountries: CountryRecord[];
-  polarCountryLabels: CountryLabelRecord[];
   countryLabels: CountryLabelRecord[];
   adm1: BoundaryRecord[];
   adm2: BoundaryRecord[];
@@ -75,168 +73,23 @@ type Props = {
   onUnavailable?: () => void;
 };
 
-const EMPTY_COLLECTION = (): GeoJSON.FeatureCollection => ({
-  type: "FeatureCollection",
-  features: [],
-});
-
 const MAP_MAX_ZOOM = 24;
-const POLAR_CANVAS_LATITUDE = 70;
-const POLAR_CANVAS_SOURCE_LATITUDE = 65;
-const POLAR_CANVAS_STROKE = "rgba(7, 22, 34, 0.82)";
+const GLOBE_MAX_ZOOM = 4.6;
 
-function geometryLatitudeBounds(geometry: Geometry): [number, number] {
-  let min = 90;
-  let max = -90;
-  const visit = (coordinates: any): void => {
-    if (!Array.isArray(coordinates)) return;
-    if (typeof coordinates[0] === "number") {
-      const latitude = Number(coordinates[1]);
-      if (Number.isFinite(latitude)) {
-        min = Math.min(min, latitude);
-        max = Math.max(max, latitude);
-      }
-      return;
-    }
-    coordinates.forEach(visit);
-  };
-  if (geometry.type === "GeometryCollection") {
-    geometry.geometries.forEach(child => visit((child as any).coordinates));
-  } else {
-    visit((geometry as any).coordinates);
-  }
-  return min <= max ? [min, max] : [0, 0];
-}
+type ScreenPoint = [number, number];
+type GlobeProjection = ReturnType<typeof geoOrthographic>;
 
-function wrapLongitude(longitude: number) {
-  return ((((longitude + 180) % 360) + 360) % 360) - 180;
-}
-
-function pointInRing(longitude: number, latitude: number, ring: any[]) {
-  let inside = false;
-  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
-    const current = ring[index];
-    const prior = ring[previous];
-    if (!Array.isArray(current) || !Array.isArray(prior)) continue;
-    const currentLongitude = Number(current[0]);
-    const priorLongitude = Number(prior[0]);
-    const longitudeDelta = currentLongitude - priorLongitude;
-    const adjustedLongitude = longitude + (Math.abs(longitudeDelta) > 180 ? (longitudeDelta > 0 ? 360 : -360) : 0);
-    const adjustedPriorLongitude = priorLongitude;
-    const crosses = ((Number(current[1]) > latitude) !== (Number(prior[1]) > latitude)) &&
-      longitude < (adjustedPriorLongitude + (adjustedLongitude - adjustedPriorLongitude) * (latitude - Number(prior[1])) / (Number(current[1]) - Number(prior[1])));
-    if (crosses) inside = !inside;
-  }
-  return inside;
-}
-
-function geometryContainsPoint(geometry: Geometry, longitude: number, latitude: number): boolean {
-  if (geometry.type === "Polygon") {
-    return geometry.coordinates.length > 0 && pointInRing(longitude, latitude, geometry.coordinates[0]) && geometry.coordinates.slice(1).every(ring => !pointInRing(longitude, latitude, ring));
-  }
-  if (geometry.type === "MultiPolygon") {
-    return geometry.coordinates.some(polygon => polygon.length > 0 && pointInRing(longitude, latitude, polygon[0]) && polygon.slice(1).every(ring => !pointInRing(longitude, latitude, ring)));
-  }
-  if (geometry.type === "GeometryCollection") return geometry.geometries.some(child => geometryContainsPoint(child, longitude, latitude));
-  return false;
-}
-
-function screenSamplesInsideGeometry(map: MapLibreMap, geometry: Geometry, width: number, height: number) {
-  const samples = [[width * 0.08, height * 0.08], [width * 0.5, height * 0.08], [width * 0.92, height * 0.08], [width * 0.08, height * 0.5], [width * 0.5, height * 0.5], [width * 0.92, height * 0.5], [width * 0.08, height * 0.92], [width * 0.5, height * 0.92], [width * 0.92, height * 0.92]];
-  try {
-    return samples.every(([x, y]) => {
-      const coordinate = map.unproject([x, y]);
-      return geometryContainsPoint(geometry, coordinate.lng, coordinate.lat);
-    });
-  } catch {
-    return false;
-  }
-}
-
-function projectPolarCoordinate(map: MapLibreMap, longitude: number, latitude: number, width: number, height: number) {
-  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
+function globeProjection(map: MapLibreMap, width: number, height: number): GlobeProjection {
   const center = map.getCenter();
-  const centerLongitude = (center.lng * Math.PI) / 180;
-  const centerLatitude = (center.lat * Math.PI) / 180;
-  const pointLongitude = (wrapLongitude(longitude) * Math.PI) / 180;
-  const pointLatitude = (Math.max(-89.999, Math.min(89.999, latitude)) * Math.PI) / 180;
-  const deltaLongitude = pointLongitude - centerLongitude;
-  const visibleDot = Math.sin(centerLatitude) * Math.sin(pointLatitude) + Math.cos(centerLatitude) * Math.cos(pointLatitude) * Math.cos(deltaLongitude);
-  if (visibleDot < -0.02) return null;
-  const centerPoint = map.project(center);
-  const horizonPoint = map.project([wrapLongitude(center.lng + 89.99), 0]);
-  const measuredRadius = Math.hypot(horizonPoint.x - centerPoint.x, horizonPoint.y - centerPoint.y);
-  const radius = Number.isFinite(measuredRadius) && measuredRadius > 40 ? measuredRadius : Math.min(width, height) * 0.5;
-  const x = centerPoint.x + radius * Math.cos(pointLatitude) * Math.sin(deltaLongitude);
-  const y = centerPoint.y - radius * (Math.sin(pointLatitude) * Math.cos(centerLatitude) - Math.cos(pointLatitude) * Math.sin(centerLatitude) * Math.cos(deltaLongitude));
-  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  const radius = Math.max(80, Math.min(width, height) * 0.48 * Math.pow(2, map.getZoom() - 1.25));
+  return geoOrthographic()
+    .translate([width / 2, height / 2])
+    .scale(Math.min(Math.max(radius, 80), Math.max(width, height) * 1.18))
+    .rotate([-center.lng, -center.lat, -map.getBearing()])
+    .clipAngle(90);
 }
 
-function drawPolarRing(
-  context: CanvasRenderingContext2D,
-  map: MapLibreMap,
-  ring: any[],
-  width: number,
-  height: number,
-) {
-  if (!ring.length) return;
-  let previous: { x: number; y: number } | null = null;
-  let segment: Array<{ x: number; y: number }> = [];
-  const steps = 8;
-  const flush = () => {
-    if (segment.length >= 3) {
-      context.moveTo(segment[0].x, segment[0].y);
-      segment.slice(1).forEach(point => context.lineTo(point.x, point.y));
-      context.closePath();
-    }
-    segment = [];
-    previous = null;
-  };
-  ring.forEach((coordinate, index) => {
-    const next = ring[(index + 1) % ring.length];
-    if (!Array.isArray(coordinate) || !Array.isArray(next)) return;
-    for (let step = index === 0 ? 0 : 1; step <= steps; step += 1) {
-      const ratio = step / steps;
-      const longitudeDelta = Number(next[0]) - Number(coordinate[0]);
-      const shortestDelta = longitudeDelta > 180 ? longitudeDelta - 360 : longitudeDelta < -180 ? longitudeDelta + 360 : longitudeDelta;
-      const point = projectPolarCoordinate(
-        map,
-        Number(coordinate[0]) + shortestDelta * ratio,
-        Number(coordinate[1]) + (Number(next[1]) - Number(coordinate[1])) * ratio,
-        width,
-        height,
-      );
-      const outside = !point;
-      if (outside) {
-        flush();
-        continue;
-      }
-      const seamJump = previous && Math.hypot(point.x - previous.x, point.y - previous.y) > Math.max(width, height) * 0.72;
-      if (seamJump) flush();
-      segment.push(point);
-      previous = point;
-    }
-  });
-  flush();
-}
-
-function drawPolarGeometry(
-  context: CanvasRenderingContext2D,
-  map: MapLibreMap,
-  geometry: Geometry,
-  width: number,
-  height: number,
-) {
-  if (geometry.type === "Polygon") {
-    geometry.coordinates.forEach(ring => drawPolarRing(context, map, ring, width, height));
-  } else if (geometry.type === "MultiPolygon") {
-    geometry.coordinates.forEach(polygon => polygon.forEach(ring => drawPolarRing(context, map, ring, width, height)));
-  } else if (geometry.type === "GeometryCollection") {
-    geometry.geometries.forEach(child => drawPolarGeometry(context, map, child, width, height));
-  }
-}
-
-function drawPolarCanvas(
+function drawGlobeOverview(
   canvas: HTMLCanvasElement,
   map: MapLibreMap,
   countries: CountryRecord[],
@@ -257,62 +110,69 @@ function drawPolarCanvas(
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   context.clearRect(0, 0, width, height);
 
-  const north = map.getCenter().lat >= 0;
-  const candidates = countries.filter(country => {
-    const [minLatitude, maxLatitude] = geometryLatitudeBounds(country.feature.geometry);
-    return north ? maxLatitude >= POLAR_CANVAS_SOURCE_LATITUDE : minLatitude <= -POLAR_CANVAS_SOURCE_LATITUDE;
-  });
-  const polarCountryIds = new Set(candidates.map(country => country.id));
-  candidates.forEach(country => {
+  const projection = globeProjection(map, width, height);
+  const path = geoPath(projection, context);
+  context.beginPath();
+  path({ type: "Sphere" } as unknown as GeoJSON.GeoJSON);
+  context.fillStyle = "#061423";
+  context.fill();
+  context.strokeStyle = "rgba(118, 213, 197, 0.28)";
+  context.lineWidth = 1.2;
+  context.stroke();
+
+  const orderedCountries = [...countries].sort((a, b) => Number(a.selected) - Number(b.selected));
+  orderedCountries.forEach(country => {
     context.beginPath();
-    drawPolarGeometry(context, map, country.feature.geometry, width, height);
+    path(country.feature as GeoJSON.GeoJSON);
     context.fillStyle = country.color;
-    context.globalAlpha = country.id === "010" ? 0.76 : 0.62;
+    context.globalAlpha = country.visible ? (country.selected ? 0.86 : 0.72) : 0.22;
     context.fill("evenodd");
-    context.strokeStyle = POLAR_CANVAS_STROKE;
-    context.lineWidth = Math.max(0.65, Math.min(1.55, map.getZoom() * 0.12));
-    context.globalAlpha = 0.9;
+    context.strokeStyle = country.selected ? "#f5d78c" : "rgba(16, 38, 54, 0.82)";
+    context.lineWidth = country.selected ? 1.5 : 0.7;
+    context.globalAlpha = 1;
     context.stroke();
   });
 
-  const labelSize = Math.max(10, Math.min(18, 10 + (map.getZoom() - 1.4) * 1.8));
+  const globeRadius = projection.scale();
+  const labelSize = Math.max(10, Math.min(18, 10 + (map.getZoom() - 1.25) * 1.6));
   context.font = `600 ${labelSize}px "Open Sans", Arial, sans-serif`;
   context.textAlign = "center";
   context.textBaseline = "middle";
-  labels.forEach(label => {
-    if (!label.label || !polarCountryIds.has(label.id)) return;
-    const point = projectPolarCoordinate(map, label.longitude, label.latitude, width, height);
-    if (!point || point.x < -80 || point.x > width + 80 || point.y < -40 || point.y > height + 40) return;
+  const occupied: Array<{ x: number; y: number; width: number; height: number }> = [];
+  const visibleCountryIds = new Set(countries.filter(country => country.visible).map(country => country.id));
+  const labelCandidates = labels
+    .filter(label => label.label && visibleCountryIds.has(label.id))
+    .map(label => ({
+      label,
+      point: projection([label.longitude, label.latitude]),
+      priority: label.selected ? 0 : label.id === "010" ? 1 : 2,
+    }))
+    .filter(item => item.point && Number.isFinite(item.point[0]) && Number.isFinite(item.point[1]))
+    .sort((a, b) => a.priority - b.priority);
+
+  labelCandidates.forEach(({ label, point }) => {
+    if (!point) return;
+    const [x, y] = point;
+    const widthWithHalo = context.measureText(label.name).width + 12;
+    const heightWithHalo = labelSize + 8;
+    if (Math.hypot(x - width / 2, y - height / 2) > globeRadius - 4) return;
+    const box = { x: x - widthWithHalo / 2, y: y - heightWithHalo / 2, width: widthWithHalo, height: heightWithHalo };
+    if (occupied.some(other => box.x < other.x + other.width && box.x + box.width > other.x && box.y < other.y + other.height && box.y + box.height > other.y)) return;
+    occupied.push(box);
     context.lineWidth = 3;
-    context.strokeStyle = "rgba(6, 20, 35, 0.92)";
-    context.strokeText(label.name, point.x, point.y);
-    context.fillStyle = "#dbfff6";
-    context.fillText(label.name, point.x, point.y);
+    context.strokeStyle = "rgba(6, 20, 35, 0.94)";
+    context.strokeText(label.name, x, y);
+    context.fillStyle = label.selected ? "#fff0bb" : "#dbfff6";
+    context.fillText(label.name, x, y);
   });
   context.globalAlpha = 1;
 }
 
-function isPolarCamera(map: MapLibreMap) {
-  return map.getProjection?.()?.type === "globe" && Math.abs(map.getCenter().lat) >= POLAR_CANVAS_LATITUDE;
-}
-
-function applyPolarLayerVisibility(map: MapLibreMap, polar: boolean) {
-  const layers = map.getStyle().layers ?? [];
-  layers.forEach(layer => {
-    const hideInPolar =
-      layer.id === "atlas-country-fill" ||
-      layer.id === "atlas-country-line" ||
-      layer.id === "atlas-country-label" ||
-      layer.id === "atlas-locality-label" ||
-      /^atlas-adm[12]-(fill|line|label)$/.test(layer.id) ||
-      /^atlas-global-adm[1-5]-(fill|line|label)$/.test(layer.id) ||
-      layer.id === "atlas-global-places-label";
-    if (!hideInPolar || !map.getLayer(layer.id)) return;
-    const visibility = polar ? "none" : "visible";
-    if (map.getLayoutProperty(layer.id, "visibility") !== visibility) {
-      map.setLayoutProperty(layer.id, "visibility", visibility);
-    }
-  });
+function globeCoordinateAtPoint(map: MapLibreMap, point: { x: number; y: number }, width: number, height: number): [number, number] | null {
+  const projection = globeProjection(map, width, height);
+  const coordinate = projection.invert?.([point.x, point.y]);
+  if (!coordinate || !Number.isFinite(coordinate[0]) || !Number.isFinite(coordinate[1])) return null;
+  return [coordinate[0], coordinate[1]];
 }
 
 function globalLabelSize(zoom: number) {
@@ -320,20 +180,34 @@ function globalLabelSize(zoom: number) {
 }
 
 function desiredProjection(map: MapLibreMap): "globe" | "mercator" {
-  const centerLatitude = Math.abs(map.getCenter().lat);
-  if (centerLatitude >= POLAR_CANVAS_LATITUDE) return "globe";
-  return map.getZoom() >= 4.6 ? "mercator" : "globe";
+  return map.getZoom() >= GLOBE_MAX_ZOOM ? "mercator" : "globe";
 }
 
-function updateProjectionAndPolarMode(map: MapLibreMap) {
+function applyOverviewLayerVisibility(map: MapLibreMap, overview: boolean) {
+  const layers = map.getStyle?.()?.layers ?? [];
+  layers.forEach(layer => {
+    const hideInOverview =
+      layer.id === "atlas-country-fill" ||
+      layer.id === "atlas-country-line" ||
+      layer.id === "atlas-country-label" ||
+      layer.id === "atlas-locality-label" ||
+      /^atlas-adm[12]-(fill|line|label)$/.test(layer.id) ||
+      /^atlas-global-adm[1-5]-(fill|line|label)$/.test(layer.id) ||
+      layer.id === "atlas-global-places-label";
+    if (!hideInOverview || !map.getLayer(layer.id)) return;
+    const visibility = overview ? "none" : "visible";
+    if (map.getLayoutProperty(layer.id, "visibility") !== visibility) map.setLayoutProperty(layer.id, "visibility", visibility);
+  });
+}
+
+function updateProjectionAndOverviewMode(map: MapLibreMap) {
   if (!map.getStyle?.()) return;
   const nextProjection = desiredProjection(map);
   const currentProjection = map.getProjection?.()?.type;
+  const overview = nextProjection === "globe";
   try {
-    if (currentProjection !== nextProjection) {
-      map.setProjection({ type: nextProjection });
-    }
-    applyPolarLayerVisibility(map, nextProjection === "globe" && Math.abs(map.getCenter().lat) >= POLAR_CANVAS_LATITUDE);
+    if (currentProjection !== nextProjection) map.setProjection({ type: nextProjection });
+    applyOverviewLayerVisibility(map, overview);
   } catch {
     // MapLibre can expose the style object one tick before its style mutation APIs are ready.
   }
@@ -509,8 +383,10 @@ function atlasStyle(input: {
           "text-size": ["interpolate", ["linear"], ["zoom"], 3.25, 11, 5.8, 15, 8.6, 18],
           "text-max-width": 8,
           "text-padding": 3,
-          "text-allow-overlap": true,
-          "text-ignore-placement": true,
+          "text-allow-overlap": false,
+          "text-ignore-placement": false,
+          "text-keep-upright": true,
+          "symbol-avoid-edges": true,
           "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 0, 1],
         },
         filter: ["==", ["get", "label"], true],
@@ -543,8 +419,10 @@ function atlasStyle(input: {
           "text-size": ["interpolate", ["linear"], ["zoom"], 6.1, 14, 10, 16, 13, 18],
           "text-max-width": 7,
           "text-padding": 2,
-          "text-allow-overlap": true,
-          "text-ignore-placement": true,
+          "text-allow-overlap": false,
+          "text-ignore-placement": false,
+          "text-keep-upright": true,
+          "symbol-avoid-edges": true,
           "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 0, 1],
         },
         filter: ["==", ["get", "label"], true],
@@ -562,8 +440,10 @@ function atlasStyle(input: {
           "text-offset": [0.8, 0],
           "text-anchor": "left",
           "text-padding": 2,
-          "text-allow-overlap": true,
-          "text-ignore-placement": true,
+          "text-allow-overlap": false,
+          "text-ignore-placement": false,
+          "text-keep-upright": true,
+          "symbol-avoid-edges": true,
           "symbol-sort-key": ["-", 1000000000, ["coalesce", ["get", "population"], 0]],
         },
         filter: ["==", ["get", "label"], true],
@@ -687,8 +567,10 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
           "text-size": ["interpolate", ["linear"], ["zoom"], minzoom + 0.1, globalLabelSize(minzoom + 0.1), minzoom + 2.4, globalLabelSize(minzoom + 2.4), MAP_MAX_ZOOM, globalLabelSize(MAP_MAX_ZOOM)],
           "text-max-width": 7,
           "text-padding": 2,
-          "text-allow-overlap": true,
-          "text-ignore-placement": true,
+          "text-allow-overlap": false,
+          "text-ignore-placement": false,
+          "text-keep-upright": true,
+          "symbol-avoid-edges": true,
           "text-variable-anchor": ["center", "top", "bottom", "left", "right"],
           "symbol-sort-key": ["case", ["boolean", ["get", "selected"], false], 0, 1],
         },
@@ -723,8 +605,10 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
         "text-offset": [0, 0],
         "text-anchor": "center",
         "text-padding": 1,
-        "text-allow-overlap": true,
-        "text-ignore-placement": true,
+        "text-allow-overlap": false,
+        "text-ignore-placement": false,
+        "text-keep-upright": true,
+        "symbol-avoid-edges": true,
         "text-variable-anchor": ["center", "top", "bottom", "left", "right"],
         "symbol-sort-key": ["-", 1000000000, ["coalesce", ["get", "population"], 0]],
       },
@@ -735,16 +619,12 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
 
 
 const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function MapLibreWorldScene(
-  { initialView, countries, polarCountries, polarCountryLabels, countryLabels, adm1, adm2, localities, globalMvt, spinEnabled = true, onViewChange, onPick, onUnavailable },
+  { initialView, countries, countryLabels, adm1, adm2, localities, globalMvt, spinEnabled = true, onViewChange, onPick, onUnavailable },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const polarCanvasRef = useRef<HTMLCanvasElement>(null);
+  const globeCanvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const polarCountriesRef = useRef(polarCountries);
-  const polarLabelsRef = useRef(polarCountryLabels);
-  polarCountriesRef.current = polarCountries;
-  polarLabelsRef.current = polarCountryLabels;
   const baseZoomRef = useRef(1.25);
   const onViewChangeRef = useRef(onViewChange);
   const onPickRef = useRef(onPick);
@@ -773,9 +653,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       const map = mapRef.current;
       if (!map) return;
       map.stop();
-      map.fitBounds([[-180, -58], [180, 84]], { padding: { top: 78, right: 36, bottom: 40, left: 36 }, duration: 420, essential: true });
-      map.setBearing(0);
-      map.setPitch(0);
+      map.jumpTo({ center: [0, 20], zoom: 1.25, bearing: 0, pitch: 0 });
     },
     focusCenter(center, zoomFactor) {
       const map = mapRef.current;
@@ -805,6 +683,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
     const container = containerRef.current;
     if (!container) return;
     let map: MapLibreMap;
+    let globeFrame = 0;
     try {
       setWorkerUrl(maplibreWorkerUrl);
       map = new MapLibreMapClass({
@@ -827,22 +706,26 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       map.touchZoomRotate.enableRotation();
       map.dragRotate.enable();
       map.touchPitch.disable();
-      const redrawPolarCanvas = () => {
-        const canvas = polarCanvasRef.current;
+      const redrawGlobe = () => {
+        const canvas = globeCanvasRef.current;
         if (!canvas) return;
-        const polar = isPolarCamera(map);
-        canvas.style.opacity = polar ? "1" : "0";
-        canvas.style.visibility = polar ? "visible" : "hidden";
-        if (polar) {
-          drawPolarCanvas(canvas, map, polarCountriesRef.current, polarLabelsRef.current);
-        } else {
-          const context = canvas.getContext("2d");
-          context?.clearRect(0, 0, canvas.width, canvas.height);
+        const overview = desiredProjection(map) === "globe";
+        canvas.style.opacity = overview ? "1" : "0";
+        canvas.style.visibility = overview ? "visible" : "hidden";
+        if (overview && globeFrame === 0) {
+          globeFrame = window.requestAnimationFrame(() => {
+            globeFrame = 0;
+            if (desiredProjection(map) !== "globe") return;
+            const rect = canvas.getBoundingClientRect();
+            drawGlobeOverview(canvas, map, countries, countryLabels);
+            canvas.dataset.center = `${map.getCenter().lng.toFixed(4)},${map.getCenter().lat.toFixed(4)}`;
+            canvas.dataset.size = `${rect.width}x${rect.height}`;
+          });
         }
       };
       const syncCamera = () => {
-        updateProjectionAndPolarMode(map);
-        redrawPolarCanvas();
+        updateProjectionAndOverviewMode(map);
+        redrawGlobe();
         onViewChangeRef.current?.(toView(map));
       };
       map.on("load", () => {
@@ -851,18 +734,29 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       });
       map.on("style.load", () => {
         map.setProjection({ type: "globe" });
-        map.fitBounds([[-180, -58], [180, 84]], { padding: { top: 78, right: 36, bottom: 40, left: 36 }, duration: 0 });
-        baseZoomRef.current = map.getZoom();
         if (initialView) map.jumpTo(initialView);
-        updateProjectionAndPolarMode(map);
+        baseZoomRef.current = initialView?.zoom ?? map.getZoom();
+        updateProjectionAndOverviewMode(map);
         setStyleReady(true);
-        redrawPolarCanvas();
+        redrawGlobe();
         onViewChangeRef.current?.(toView(map));
       });
       map.on("move", syncCamera);
-      map.on("render", redrawPolarCanvas);
-      map.on("resize", redrawPolarCanvas);
+      map.on("render", redrawGlobe);
+      map.on("resize", () => { map.resize(); redrawGlobe(); });
       map.on("click", event => {
+        const canvas = globeCanvasRef.current;
+        if (canvas && desiredProjection(map) === "globe") {
+          const rect = canvas.getBoundingClientRect();
+          const coordinate = globeCoordinateAtPoint(map, event.point, rect.width, rect.height);
+          if (coordinate) {
+            const hit = [...countries].reverse().find(country => country.visible && geoContains(country.feature as GeoJSON.Feature, coordinate));
+            if (hit) {
+              onPickRef.current?.({ kind: "country", id: hit.id });
+              return;
+            }
+          }
+        }
         const feature = map.queryRenderedFeatures(event.point).find((candidate: MapGeoJSONFeature) => {
           const id = candidate.layer.id;
           return id === "atlas-locality-label" || id === "atlas-global-places-label" || id === "atlas-country-fill" || /atlas-global-adm[1-5]-fill$/.test(id) || /^atlas-adm[12]-fill$/.test(id);
@@ -914,6 +808,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
 
       return () => {
         window.cancelAnimationFrame(spinFrame);
+        if (globeFrame) window.cancelAnimationFrame(globeFrame);
         reducedMotionQuery.removeEventListener?.("change", updateReducedMotion);
         spinEvents.forEach(eventName => map.off(eventName, pauseSpin));
         resizeObserver.disconnect();
@@ -929,7 +824,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
     if (!map || !styleReady) return;
     if (globalMvt) {
       addGlobalMvtLayers(map, globalMvt);
-      updateProjectionAndPolarMode(map);
+      updateProjectionAndOverviewMode(map);
     }
     sourceSetData(map, "atlas-countries", featureCollection(countries.map(asCountryFeature) as any));
     sourceSetData(map, "atlas-country-labels", featureCollection(countryLabels.map(asCountryLabelFeature) as any));
@@ -940,7 +835,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
 
   return       <div className="absolute inset-0 h-full w-full" data-maplibre-world>
         <div ref={containerRef} className="absolute inset-0 h-full w-full" />
-        <canvas ref={polarCanvasRef} className="pointer-events-none absolute inset-0 h-full w-full opacity-0" aria-hidden="true" />
+        <canvas ref={globeCanvasRef} className="pointer-events-none absolute inset-0 h-full w-full opacity-0" aria-hidden="true" />
       </div>;
 });
 

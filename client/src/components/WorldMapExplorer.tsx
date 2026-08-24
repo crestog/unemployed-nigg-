@@ -200,15 +200,7 @@ const mapCollection = feature(
     .countries
 ) as unknown as GeoJSON.FeatureCollection<GeoJSON.Geometry, { name?: string }>;
 const allCountryFeatures = mapCollection.features as MapFeature[];
-const countryFeatures = allCountryFeatures.filter(country => {
-  const id = String(country.id ?? "").padStart(3, "0");
-  const name = String(country.properties?.name ?? "").toLowerCase();
-  // MapLibre globe cannot safely carry ordinary Mercator vector geometry into
-  // a pole. Keep Antarctica out of the normal GeoJSON fill, then pass the
-  // complete topology to MapLibreWorldScene's camera-projected polar path so
-  // the pole is rendered once, from the source geometry, without a tile seam.
-  return id !== "010" && name !== "antarctica";
-});
+const countryFeatures = allCountryFeatures;
 const safeCountryLabelAnchor = (country: MapFeature): [number, number] | null => {
   try {
     const centroid = geoCentroid(country as GeoJSON.Feature);
@@ -1327,46 +1319,19 @@ export default function WorldMapExplorer() {
     return countryFeatures.flatMap((country, index) => {
       const id = topologyId(country);
       const node = nodeById.get(id);
-      if (!node) return [];
+      if (!node && id !== "010") return [];
       return [{
         id,
-        name: node.name,
+        name: node?.name ?? country.properties?.name ?? "Antarctica",
         feature: country as GeoJSON.Feature,
         color: palette[index % palette.length],
         visible: !nearbyMode || nearbyIds.has(id),
-        label: countryLabelIds.has(id),
+        label: id === "010" || countryLabelIds.has(id),
         selected: selectedId === id,
       }];
     });
   }, [countryFeatures, countryLabelIds, nearbyIds, nearbyMode, nodeById, selectedId]);
   const countryLabelLayers = useMemo(() => countryLayers.flatMap(item => {
-    const anchor = safeCountryLabelAnchor(item.feature as MapFeature);
-    return anchor ? [{
-      id: item.id,
-      name: item.name,
-      longitude: anchor[0],
-      latitude: anchor[1],
-      label: item.label,
-      selected: item.selected,
-    }] : [];
-  }), [countryLayers]);
-  const polarCountryLayers = useMemo(() => {
-    const palette = ["#6e8f78", "#9a9d6d", "#7894a0", "#a08368", "#7d9270", "#8a8b9f", "#b09a70", "#6c8f88"];
-    return allCountryFeatures.flatMap((country, index) => {
-      const id = topologyId(country);
-      const node = nodeById.get(id);
-      return [{
-        id,
-        name: node?.name ?? country.properties?.name ?? (id === "010" ? "Antarctica" : "Country"),
-        feature: country as GeoJSON.Feature,
-        color: palette[index % palette.length],
-        visible: true,
-        label: true,
-        selected: selectedId === id,
-      }];
-    });
-  }, [countryLabelIds, nodeById, selectedId]);
-  const polarCountryLabelLayers = useMemo(() => polarCountryLayers.flatMap(item => {
     const anchor = item.id === "010" ? [0, -82] as [number, number] : safeCountryLabelAnchor(item.feature as MapFeature);
     return anchor ? [{
       id: item.id,
@@ -1376,7 +1341,7 @@ export default function WorldMapExplorer() {
       label: item.label,
       selected: item.selected,
     }] : [];
-  }), [polarCountryLayers]);
+  }), [countryLayers]);
   const adm1Layers = useMemo(() => semanticAdm1.flatMap(item => item.geometry ? [{
     id: item.id,
     name: item.name,
@@ -1497,8 +1462,6 @@ export default function WorldMapExplorer() {
           ref={mapSceneRef}
           initialView={initialMapView}
           countries={countryLayers}
-          polarCountries={polarCountryLayers}
-          polarCountryLabels={polarCountryLabelLayers}
           countryLabels={countryLabelLayers}
           globalMvt={globalMvtManifest}
           spinEnabled={spinEnabled && !reducedMotion}
@@ -1616,7 +1579,7 @@ export default function WorldMapExplorer() {
                 <span>{globalMvtManifest.layers.adm2.featureCount.toLocaleString()} ADM2</span>
               </div>
               <p className="mt-2 text-[10px] leading-4 text-[#8297ac]">
-                {Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).length ? `Deep administrative levels available: ${Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).sort().join(", ").toUpperCase()}.` : "No global deep administrative levels are present in this release yet."} Global place names remain a separate source layer and render as text only; Atlas does not draw place-point markers. {globalMvtManifest.geometryPolicy?.safeVectorLatitude != null ? `Deep administrative vectors above ${globalMvtManifest.geometryPolicy.safeVectorLatitude}° latitude follow the Web Mercator policy; the globe-safe overview still shows high-latitude countries and Antarctica from the bundled Natural Earth-derived world-atlas geometry.` : "Polar detail policy is not present in this older release."} <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
+                {Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).length ? `Deep administrative levels available: ${Object.keys(globalMvtManifest.coveragePolicy.deepLevels ?? {}).sort().join(", ").toUpperCase()}.` : "No global deep administrative levels are present in this release yet."} Global place names remain a separate source layer and render as text only; Atlas does not draw place-point markers. {globalMvtManifest.geometryPolicy?.safeVectorLatitude != null ? `The overview uses a clipped orthographic globe for stable polar geometry; detailed administrative vectors switch to Web Mercator only after the globe overview is left.` : "The overview uses a clipped orthographic globe; detailed administrative vectors use the versioned tile policy."} <a href={globalMvtManifest.source.sourceUrl} target="_blank" rel="noreferrer" className="text-[#45d7c0] underline-offset-2 hover:underline">Source and policy <ExternalLink className="inline h-3 w-3" /></a>
               </p>
             </>
           ) : (

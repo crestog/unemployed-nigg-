@@ -27,7 +27,7 @@ from typing import Any, Iterable
 
 import ijson
 import numpy as np
-from mapbox_vector_tile import encode
+from mapbox_vector_tile import decode, encode
 try:
     from pyproj import Transformer
 except ImportError:  # pragma: no cover - Kaggle installs pyproj in the build venv
@@ -453,16 +453,36 @@ def encode_tile(layer: str, records: list[dict[str, Any]], x: int, y: int, zoom:
         })
     if not features:
         return b""
-    return encode(
+    payload = encode(
         {"name": layer, "features": features},
         default_options={
             "quantize_bounds": bounds,
             "extents": MVT_EXTENT,
-            "y_coord_down": True,
+            # Shapely/quantize_bounds are north-up (Y increases northward). MVT
+            # tile coordinates are screen/XYZ-down (Y increases southward), so
+            # the encoder must perform the single required Y inversion. The
+            # previous True value emitted north-up coordinates as if they were
+            # already screen-down, vertically mirroring every polygon inside
+            # its tile and producing the detached diagonal/wedge artifact on
+            # MapLibre globe.
+            "y_coord_down": False,
             "check_winding_order": True,
             "on_invalid_geometry": make_it_valid,
         },
     )
+    # A geometry can survive clipping but collapse to zero drawable commands
+    # after the 4096-grid quantization. mapbox_vector_tile still emits a
+    # 13-byte layer header for that case. Treat it as a genuinely absent tile;
+    # otherwise the manifest advertises a tile whose decoded feature list is
+    # empty and downstream validation/client logic sees a false positive.
+    if len(payload) <= 13:
+        try:
+            decoded = decode(payload)
+            if not decoded.get(layer, {}).get("features"):
+                return b""
+        except Exception:
+            return b""
+    return payload
 
 
 def read_records(

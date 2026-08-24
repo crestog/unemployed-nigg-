@@ -1,0 +1,71 @@
+{
+  "maxShardBytes": 8388608,
+  "layers": {
+    "adm1": {
+      "tileCount": 306,
+      "tileBytes": 5504453,
+      "shardCount": 32,
+      "maxShardBytes": 719303
+    },
+    "adm1-labels": {
+      "tileCount": 219,
+      "tileBytes": 258787,
+      "shardCount": 31,
+      "maxShardBytes": 32649
+    },
+    "adm2": {
+      "tileCount": 3611,
+      "tileBytes": 27284882,
+      "shardCount": 128,
+      "maxShardBytes": 1076080
+    },
+    "adm2-labels": {
+      "tileCount": 2352,
+      "tileBytes": 3809867,
+      "shardCount": 126,
+      "maxShardBytes": 174070
+    },
+    "adm3": {
+      "tileCount": 18201,
+      "tileBytes": 131618411,
+      "shardCount": 416,
+      "maxShardBytes": 2671768
+    },
+    "adm3-labels": {
+      "tileCount": 8972,
+      "tileBytes": 13963892,
+      "shardCount": 411,
+      "maxShardBytes": 356004
+    },
+    "adm4": {
+      "tileCount": 32854,
+      "tileBytes": 131006972,
+      "shardCount": 623,
+      "maxShardBytes": 2236735
+    },
+    "adm4-labels": {
+      "tileCount": 17273,
+      "tileBytes": 14345403,
+      "shardCount": 600,
+      "maxShardBytes": 303218
+    },
+    "adm5": {
+      "tileCount": 204278,
+      "tileBytes": 336299147,
+      "shardCount": 1148,
+      "maxShardBytes": 1091990
+    },
+    "adm5-labels": {
+      "tileCount": 164246,
+      "tileBytes": 113293081,
+      "shardCount": 1077,
+      "maxShardBytes": 401527
+    },
+    "places-labels": {
+      "tileCount": 7181,
+      "tileBytes": 19456370,
+      "shardCount": 252,
+      "maxShardBytes": 490105
+    }
+  }
+}

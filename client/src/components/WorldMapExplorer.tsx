@@ -381,6 +381,8 @@ export default function WorldMapExplorer() {
   const [indiaTileRetryNonce, setIndiaTileRetryNonce] = useState(0);
   const [geoSelection, setGeoSelection] = useState<GeoSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [releaseLoading, setReleaseLoading] = useState(true);
+  const [releaseRetryNonce, setReleaseRetryNonce] = useState(0);
   const [size, setSize] = useState({ width: 1280, height: 760 });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mapView, setMapView] = useState<{
@@ -558,14 +560,40 @@ export default function WorldMapExplorer() {
   );
 
   useEffect(() => {
-    fetch("/data/world-venture.json")
+    const controller = new AbortController();
+    let active = true;
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    setReleaseLoading(true);
+    setError(null);
+    fetch(`/data/world-venture.json?v=20260824`, {
+      signal: controller.signal,
+      cache: "force-cache",
+    })
       .then(response => {
         if (!response.ok) throw new Error("World source release unavailable");
         return response.json() as Promise<WorldRelease>;
       })
-      .then(setRelease)
-      .catch((cause: Error) => setError(cause.message));
-  }, []);
+      .then(nextRelease => {
+        if (!active) return;
+        setRelease(nextRelease);
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setError(cause instanceof DOMException && cause.name === "AbortError"
+          ? "World data took too long to respond."
+          : cause instanceof Error
+            ? cause.message
+            : "World source release unavailable");
+      })
+      .finally(() => {
+        if (active) setReleaseLoading(false);
+      });
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [releaseRetryNonce]);
 
   useEffect(() => {
     if (!surfaceRef.current) return;
@@ -1439,11 +1467,32 @@ export default function WorldMapExplorer() {
     );
   if (!release)
     return (
-      <div className="grid min-h-[calc(100vh-68px)] place-items-center bg-[#08111d] text-[#c7d4e4]">
-        <div className="animate-pulse font-display text-3xl">
-          Loading world field…
+      <section className="grid min-h-[calc(100dvh-var(--atlas-header-height,68px))] place-items-center bg-[#08111d] px-6 py-16 text-[#c7d4e4]" aria-busy={releaseLoading}>
+        <div className="w-full max-w-md text-center">
+          <div className="font-mono text-[10px] uppercase tracking-[.18em] text-[#45d7c0]">World field / source release</div>
+          <h1 className="mt-4 font-display text-4xl leading-[.95] text-white sm:text-5xl">
+            {releaseLoading ? "Preparing the world field…" : "The world field is unavailable."}
+          </h1>
+          <p className="mt-4 text-sm leading-6 text-[#9db2c8]">
+            {releaseLoading
+              ? "Loading the versioned geographic release. The map will appear as soon as the source package is ready."
+              : error ?? "The geographic release could not be loaded."}
+          </p>
+          {releaseLoading ? (
+            <div className="mx-auto mt-7 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-[#183149]" role="progressbar" aria-label="Loading world data">
+              <div className="h-full w-2/5 animate-pulse rounded-full bg-[#45d7c0]" />
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setReleaseRetryNonce(current => current + 1)}
+              className="atlas-button mt-7 inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#35536f] bg-[#0d2234] px-4 py-3 text-sm font-semibold text-[#8fe7d8] hover:border-[#45d7c0]"
+            >
+              <RotateCw className="h-4 w-4" /> Try again
+            </button>
+          )}
         </div>
-      </div>
+      </section>
     );
 
   return (

@@ -9,7 +9,11 @@ import {
   X,
 } from "lucide-react";
 import { Streamdown } from "streamdown";
-import { askAtlasTutor, type AiChatResponse } from "@/lib/atlasState";
+import {
+  askAtlasTutor,
+  AtlasAiError,
+  type AiChatResponse,
+} from "@/lib/atlasState";
 
 type Topic = { id: string; title: string; summary: string; slug: string };
 type Message = {
@@ -72,6 +76,7 @@ export default function AtlasTutorChat({
     ];
     setMessages(nextMessages);
     setBusy(true);
+    let failure = "";
     const result = await askAtlasTutor({
       roadmap,
       question: value,
@@ -81,6 +86,11 @@ export default function AtlasTutorChat({
       history: nextMessages
         .slice(-8)
         .map(message => ({ role: message.role, content: message.content })),
+    }).catch((thrown: unknown) => {
+      // A rate limit is worth saying out loud in the transcript rather than
+      // hiding behind the generic "couldn't reach the tutor" line.
+      if (thrown instanceof AtlasAiError) failure = thrown.message;
+      return null;
     });
     setBusy(false);
     if (!result) {
@@ -89,6 +99,7 @@ export default function AtlasTutorChat({
         {
           role: "assistant",
           content:
+            failure ||
             "I couldn’t reach the tutor right now. Try again in a moment, or open the topic list and continue with the next unfinished topic.",
         },
       ]);

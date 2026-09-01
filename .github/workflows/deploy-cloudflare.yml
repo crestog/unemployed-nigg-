@@ -49,13 +49,27 @@ jobs:
         if: steps.gate.outputs.ready == 'true'
         run: pnpm install --frozen-lockfile
 
-      - name: Apply Atlas D1 migrations
+      - name: Typecheck
         if: steps.gate.outputs.ready == 'true'
-        run: npx wrangler d1 migrations apply atlas-roadmaps --remote --config wrangler.jsonc
+        run: pnpm check
+
+      - name: Lint
+        if: steps.gate.outputs.ready == 'true'
+        run: pnpm lint
+
+      - name: Test
+        if: steps.gate.outputs.ready == 'true'
+        run: pnpm test
 
       - name: Build static assets
         if: steps.gate.outputs.ready == 'true'
         run: pnpm build
+
+      # Migrations run only after a green build. Applying them first meant a
+      # failing build left production D1 on a schema no deployed Worker used.
+      - name: Apply Atlas D1 migrations
+        if: steps.gate.outputs.ready == 'true'
+        run: npx wrangler d1 migrations apply atlas-roadmaps --remote --config wrangler.jsonc
 
       - name: Deploy Worker assets
         if: steps.gate.outputs.ready == 'true'

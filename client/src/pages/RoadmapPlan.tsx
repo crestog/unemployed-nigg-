@@ -12,7 +12,12 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { roadmapCatalog } from "@/data/roadmapCatalog";
-import { generateAiPlan, syncAtlasAction, type AiPlan } from "@/lib/atlasState";
+import {
+  AtlasAiError,
+  generateAiPlan,
+  syncAtlasAction,
+  type AiPlan,
+} from "@/lib/atlasState";
 
 type Topic = {
   id: string;
@@ -106,11 +111,21 @@ export default function RoadmapPlan() {
       topics: topicData
         .filter(topic => topic.roadmapSlug === selectedRoadmap.slug)
         .slice(0, 140),
+    }).catch((thrown: unknown) => {
+      // AtlasAiError carries the reason — a rate limit, or a rejected body.
+      setError(
+        thrown instanceof AtlasAiError
+          ? thrown.message
+          : "Atlas could not reach the AI service. Try again, or open the roadmap and continue manually."
+      );
+      return null;
     });
     setLoading(false);
     if (!result) {
       setError(
-        "Atlas could not reach the AI service. Try again, or open the roadmap and continue manually."
+        current =>
+          current ||
+          "Atlas could not reach the AI service. Try again, or open the roadmap and continue manually."
       );
       return;
     }

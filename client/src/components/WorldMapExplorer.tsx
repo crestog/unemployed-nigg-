@@ -17,6 +17,7 @@ import {
 import worldTopology from "world-atlas/countries-50m.json";
 import { type SemanticBoundary, type SemanticLocality } from "@/lib/worldSemanticTypes";
 import type { GlobalMvtManifest } from "@/lib/worldMvt";
+import { clamp, tileKeyParts, tileKeysForViewport } from "@/lib/tileMath";
 import MapLibreWorldScene, {
   type MapLibreWorldSceneHandle,
 } from "./MapLibreWorldScene";
@@ -222,8 +223,6 @@ const safeCountryLabelAnchor = (country: MapFeature): [number, number] | null =>
     return null;
   }
 };
-const clamp = (value: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, value));
 const topologyId = (item: MapFeature) => String(item.id ?? "").padStart(3, "0");
 const formatNumber = (value: number | null | undefined) =>
   value == null ? "Unavailable" : Math.round(value).toLocaleString();
@@ -243,33 +242,6 @@ const INDIA_ADM2_ZOOM = 6.2;
 const INDIA_LOCALITY_ZOOM = 10.2;
 const GLOBAL_ADM1_MAP_ZOOM = 5;
 const GLOBAL_ADM2_MAP_ZOOM = 7.2;
-const longitudeToTileX = (longitude: number, zoom: number) =>
-  clamp(Math.floor(((longitude + 180) / 360) * 2 ** zoom), 0, 2 ** zoom - 1);
-const latitudeToTileY = (latitude: number, zoom: number) => {
-  const phi = (clamp(latitude, -85.05112878, 85.05112878) * Math.PI) / 180;
-  const normalized =
-    (1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2;
-  return clamp(Math.floor(normalized * 2 ** zoom), 0, 2 ** zoom - 1);
-};
-const tileKeyParts = (key: string) => {
-  const [z, x, y] = key.split("/").map(Number);
-  return { z, x, y };
-};
-const tileKeysForViewport = (
-  layer: IndiaTileLayer,
-  bounds: [[number, number], [number, number]] | null
-) => {
-  if (!bounds) return [];
-  const [[minLongitude, minLatitude], [maxLongitude, maxLatitude]] = bounds;
-  const minX = longitudeToTileX(minLongitude, layer.tileZoom);
-  const maxX = longitudeToTileX(maxLongitude, layer.tileZoom);
-  const minY = latitudeToTileY(maxLatitude, layer.tileZoom);
-  const maxY = latitudeToTileY(minLatitude, layer.tileZoom);
-  return layer.tiles.filter(key => {
-    const { x, y } = tileKeyParts(key);
-    return x >= minX && x <= maxX && y >= minY && y <= maxY;
-  });
-};
 const mergeUniqueById = <T extends { id: string }>(
   current: T[],
   incoming: T[]

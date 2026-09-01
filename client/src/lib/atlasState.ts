@@ -76,17 +76,25 @@ export type AiChatResponse = {
   actions: Array<{ type: string; topicId: string; note: string }>;
 };
 
-const PROFILE_KEY = "atlas-profile-id";
 const OUTBOX_KEY = "atlas-state-outbox-v1";
 const MAX_OUTBOX_ITEMS = 500;
 let flushPromise: Promise<AtlasSnapshot | null> | null = null;
 
-export function getAtlasProfileId() {
-  const existing = localStorage.getItem(PROFILE_KEY);
-  if (existing) return existing;
-  const generated = `private-${crypto.randomUUID()}`;
-  localStorage.setItem(PROFILE_KEY, generated);
-  return generated;
+/**
+ * Thrown when an AI endpoint answers with an error status. Previously any
+ * non-OK response became `null`, so a 429 was indistinguishable from the model
+ * returning nothing and the user was told to "please try again" in a loop.
+ */
+export class AtlasAiError extends Error {
+  readonly status: number;
+  readonly retryAfterSeconds: number;
+
+  constructor(status: number, message: string, retryAfterSeconds = 0) {
+    super(message);
+    this.name = "AtlasAiError";
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
 }
 
 function readOutbox(): QueuedStateAction[] {
@@ -122,20 +130,18 @@ function enqueueStateAction(action: AtlasAction) {
   writeOutbox(items.slice(-MAX_OUTBOX_ITEMS));
 }
 
+// The profile is identified by an HttpOnly cookie the Worker issues on first
+// contact. The client no longer names the profile it is acting on: sending it as
+// `?profile=` / `x-atlas-profile` let any caller address anyone else's state.
+// `credentials` is spelled out because the whole mechanism depends on it.
 async function postStateAction(item: QueuedStateAction) {
   try {
-    const profile = getAtlasProfileId();
-    const response = await fetch(
-      `/api/state?profile=${encodeURIComponent(profile)}`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-atlas-profile": profile,
-        },
-        body: JSON.stringify({ ...item.action, actionId: item.actionId }),
-      }
-    );
+    const response = await fetch("/api/state", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...item.action, actionId: item.actionId }),
+    });
     if (!response.ok) return null;
     return (await response.json()) as AtlasSnapshot;
   } catch {
@@ -175,13 +181,9 @@ export async function syncAtlasAction(action: AtlasAction) {
 export async function loadAtlasSnapshot() {
   await flushAtlasStateOutbox();
   try {
-    const profile = getAtlasProfileId();
-    const response = await fetch(
-      `/api/state?profile=${encodeURIComponent(profile)}`,
-      {
-        headers: { "x-atlas-profile": profile },
-      }
-    );
+    const response = await fetch("/api/state", {
+      credentials: "same-origin",
+    });
     if (!response.ok) return null;
     return (await response.json()) as AtlasSnapshot;
   } catch {
@@ -190,17 +192,38 @@ export async function loadAtlasSnapshot() {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T | null> {
+  let response: Response;
   try {
-    const profile = getAtlasProfileId();
-    const response = await fetch(path, {
+    response = await fetch(path, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-atlas-profile": profile,
-      },
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!response.ok) return null;
+  } catch {
+    // Offline or a dropped connection: not an error worth a dialog, the caller
+    // already has a "try again" path for a null result.
+    return null;
+  }
+  if (response.status === 429) {
+    const retryAfterSeconds = Number(response.headers.get("retry-after")) || 0;
+    const minutes = Math.ceil(retryAfterSeconds / 60);
+    throw new AtlasAiError(
+      429,
+      minutes > 1
+        ? `You have reached the hourly limit for AI generations. Try again in about ${minutes} minutes.`
+        : "You have reached the hourly limit for AI generations. Try again shortly.",
+      retryAfterSeconds
+    );
+  }
+  if (!response.ok)
+    throw new AtlasAiError(
+      response.status,
+      response.status >= 500
+        ? "Atlas could not reach the model. Please try again."
+        : "Atlas rejected that request. Please check the details and try again."
+    );
+  try {
     return (await response.json()) as T;
   } catch {
     return null;
@@ -240,7 +263,7 @@ export function getAtlasStateDiagnostics() {
     version: "outbox-v1",
     pending: readOutbox().length,
     online: typeof navigator === "undefined" ? true : navigator.onLine,
-    identity: "browser-generated private UUID",
+    identity: "server-issued HttpOnly cookie",
     crossDeviceSync: false,
     maxPendingActions: MAX_OUTBOX_ITEMS,
     transport: "/api/state",
@@ -256,7 +279,7 @@ export function getAtlasStateStorageKey() {
 }
 
 export function getAtlasStatePrivacyNote() {
-  return "The browser-generated profile ID is not authenticated identity; do not store secrets in notes.";
+  return "The server-issued profile cookie is an unauthenticated state bucket, not proof of identity; do not store secrets in notes.";
 }
 
 export function getAtlasStateNextCheckpoint() {
@@ -320,7 +343,7 @@ export function getAtlasStateEndToEndStatus() {
 }
 
 export function getAtlasStateCrossDeviceNote() {
-  return "Cross-device continuity requires authenticated identity and is not claimed by this browser-generated profile implementation.";
+  return "Cross-device continuity requires authenticated identity and is not claimed by this cookie-scoped profile implementation.";
 }
 
 export function getAtlasStateDocumentation() {
@@ -328,7 +351,7 @@ export function getAtlasStateDocumentation() {
 }
 
 export function getAtlasStateSecurityBoundary() {
-  return "A profile ID identifies a browser state bucket; it is not an authorization credential.";
+  return "A profile ID identifies a browser state bucket; it is not an authorization credential. It is issued by the server and held in an HttpOnly cookie, so it is not readable by page scripts and cannot be supplied by the caller.";
 }
 
 export function getAtlasStateAcceptanceCriteria() {

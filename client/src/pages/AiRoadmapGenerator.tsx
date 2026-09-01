@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { BookOpen, FileText, Loader2, Map, Sparkles } from "lucide-react";
 import { useLocation } from "wouter";
-import { generateAiRoadmap } from "@/lib/atlasState";
+import { AtlasAiError, generateAiRoadmap } from "@/lib/atlasState";
 
 export default function AiRoadmapGenerator() {
   const [, navigate] = useLocation();
@@ -31,12 +31,25 @@ export default function AiRoadmapGenerator() {
     }
     setBusy(true);
     setError("");
-    const roadmap = await generateAiRoadmap({
-      topic: value,
-      level: customise ? level : "beginner",
-      hours: customise ? Number(hours) : 5,
-      customise,
-    });
+    let roadmap: Awaited<ReturnType<typeof generateAiRoadmap>>;
+    try {
+      roadmap = await generateAiRoadmap({
+        topic: value,
+        level: customise ? level : "beginner",
+        hours: customise ? Number(hours) : 5,
+        customise,
+      });
+    } catch (thrown) {
+      // A rate limit or a rejected request carries a message worth showing;
+      // anything else falls back to the generic line below.
+      setBusy(false);
+      setError(
+        thrown instanceof AtlasAiError
+          ? thrown.message
+          : "Atlas could not generate that roadmap. Please try again."
+      );
+      return;
+    }
     setBusy(false);
     if (
       !roadmap ||

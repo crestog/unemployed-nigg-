@@ -4,20 +4,31 @@
   "main": "./worker.ts",
   "compatibility_date": "2026-08-20",
   "ai": {
-    "binding": "AI"
+    "binding": "AI",
   },
   "assets": {
     "directory": "./dist/public",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+  },
+  // Without this, every console.error in worker.ts is discarded — the Worker had
+  // no observability configured at all, so failures were invisible in production.
+  "observability": {
+    "enabled": true,
   },
   "d1_databases": [
     {
       "binding": "ATLAS_DB",
       "database_name": "atlas-roadmaps",
       "database_id": "488b390c-c7cf-48c1-b6a3-33ef1dba6d5d",
+      // DANGER: identical to database_id, so `wrangler dev --remote` and any
+      // preview deployment write to PRODUCTION. Fix with:
+      //   npx wrangler d1 create atlas-roadmaps-preview
+      // then paste the returned id here. Requires Cloudflare credentials, so it
+      // is left for the account owner to run.
+      // Plain `wrangler dev` is unaffected: it uses a local miniflare D1.
       "preview_database_id": "488b390c-c7cf-48c1-b6a3-33ef1dba6d5d",
-      "migrations_dir": "migrations"
-    }
-  ]
+      "migrations_dir": "migrations",
+    },
+  ],
 }

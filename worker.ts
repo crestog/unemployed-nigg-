@@ -8,7 +8,7 @@ interface Env {
   AI?: AiBinding;
 }
 
-type TopicContext = {
+export type TopicContext = {
   id: string;
   title: string;
   summary: string;
@@ -215,37 +215,103 @@ const CHAT_SCHEMA = {
   additionalProperties: false,
 };
 
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: jsonHeaders });
+function json(data: unknown, status = 200, extraHeaders?: HeadersInit) {
+  const headers = new Headers(jsonHeaders);
+  if (extraHeaders)
+    new Headers(extraHeaders).forEach((value, key) => headers.set(key, value));
+  return new Response(JSON.stringify(data), { status, headers });
 }
 
-function text(value: unknown, max = 4000) {
-  return String(value ?? "")
-    .replace(/\u0000/g, "")
-    .slice(0, max);
+export function text(value: unknown, max = 4000) {
+  // Stripping NUL is deliberate: D1 truncates a TEXT value at an embedded NUL,
+  // so a note containing one would be silently cut short on write.
+  return (
+    String(value ?? "")
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u0000/g, "")
+      .slice(0, max)
+  );
 }
 
-function number(value: unknown, min: number, max: number, fallback: number) {
+export function number(
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number
+) {
   const parsed = Number(value);
   return Number.isFinite(parsed)
     ? Math.max(min, Math.min(max, parsed))
     : fallback;
 }
 
-function profileId(request: Request) {
-  const url = new URL(request.url);
-  const requested =
-    url.searchParams.get("profile") ||
-    request.headers.get("x-atlas-profile") ||
-    "anonymous";
-  return requested.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80) || "anonymous";
+// -----------------------------------------------------------------------------
+// Identity
+//
+// The profile ID is server-issued and lives in an HttpOnly cookie. It used to be
+// read from `?profile=` / `x-atlas-profile`, which made every profile's
+// favorites, progress, notes and plans readable and writable by any caller that
+// guessed an ID. Those inputs are deliberately gone: a caller can no longer name
+// the profile it is acting on. Anonymous state written before this change is
+// unreachable, which is correct — it was never provably the caller's.
+// -----------------------------------------------------------------------------
+
+const PROFILE_COOKIE = "atlas_pid";
+/** ~13 months, long enough that anonymous state survives normal use. */
+const PROFILE_COOKIE_MAX_AGE = 60 * 60 * 24 * 400;
+const PROFILE_ID_PATTERN = /^[a-zA-Z0-9_-]{16,80}$/;
+
+export type Identity = { id: string; issued: boolean };
+
+export function sanitiseProfileId(value: string | null | undefined) {
+  if (!value) return null;
+  const cleaned = value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80);
+  return PROFILE_ID_PATTERN.test(cleaned) ? cleaned : null;
+}
+
+export function readCookie(cookieHeader: string | null, name: string) {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    return part.slice(separator + 1).trim();
+  }
+  return null;
+}
+
+/**
+ * Resolves the caller's profile from its cookie, minting a fresh one when the
+ * cookie is absent or malformed. `issued: true` means the caller must be sent a
+ * `Set-Cookie` — see {@link withIdentityCookie}.
+ */
+export function resolveIdentity(request: Request): Identity {
+  const existing = sanitiseProfileId(
+    readCookie(request.headers.get("cookie"), PROFILE_COOKIE)
+  );
+  if (existing) return { id: existing, issued: false };
+  return { id: crypto.randomUUID().replace(/-/g, ""), issued: true };
+}
+
+export function withIdentityCookie(response: Response, identity: Identity) {
+  if (!identity.issued) return response;
+  const headers = new Headers(response.headers);
+  headers.append(
+    "set-cookie",
+    `${PROFILE_COOKIE}=${identity.id}; Path=/; Max-Age=${PROFILE_COOKIE_MAX_AGE}; HttpOnly; Secure; SameSite=Lax`
+  );
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function now() {
   return new Date().toISOString();
 }
 
-function compactTopics(topics: unknown, max = 120): TopicContext[] {
+export function compactTopics(topics: unknown, max = 120): TopicContext[] {
   if (!Array.isArray(topics)) return [];
   return topics
     .slice(0, max)
@@ -261,7 +327,7 @@ function compactTopics(topics: unknown, max = 120): TopicContext[] {
     .filter(topic => topic.id && topic.title);
 }
 
-function parseAiPayload(raw: unknown): Record<string, unknown> | null {
+export function parseAiPayload(raw: unknown): Record<string, unknown> | null {
   const result = (raw || {}) as Record<string, unknown>;
   const candidate = result.response ?? result.result ?? result.output ?? result;
   if (typeof candidate === "object" && candidate !== null)
@@ -287,12 +353,23 @@ function topicMap(topics: TopicContext[]) {
   return new Map(topics.map(topic => [topic.id, topic]));
 }
 
-function validIds(ids: unknown, topics: TopicContext[], max = 30) {
+export function validIds(ids: unknown, topics: TopicContext[], max = 30) {
   const allowed = topicMap(topics);
   if (!Array.isArray(ids)) return [];
   return Array.from(
     new Set(ids.map(id => text(id, 160)).filter(id => allowed.has(id)))
   ).slice(0, max);
+}
+
+export function chainEdges<T extends { id: string }>(nodes: T[]) {
+  const edges: Array<{ source: string; target: string }> = [];
+  for (let index = 1; index < nodes.length; index += 1) {
+    const previous = nodes[index - 1];
+    const current = nodes[index];
+    if (previous && current)
+      edges.push({ source: previous.id, target: current.id });
+  }
+  return edges;
 }
 
 function fallbackPlan(input: AiPlanRequest, topics: TopicContext[]) {
@@ -324,30 +401,120 @@ function fallbackPlan(input: AiPlanRequest, topics: TopicContext[]) {
   };
 }
 
+// -----------------------------------------------------------------------------
+// Workers AI cost surface
+//
+// Every knob that costs money lives here, in one place, rather than being
+// repeated inline at each of the three call sites.
+// -----------------------------------------------------------------------------
+
+const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const AI_MAX_TOKENS = 2600;
+const AI_TEMPERATURE = 0.2;
+const AI_TIMEOUT_MS = 18_000;
+/** Generations per rolling hour, per identity+IP pair. */
+const AI_REQUESTS_PER_WINDOW = 20;
+const AI_WINDOW_MS = 60 * 60 * 1000;
+
+type QuotaVerdict = { allowed: boolean; retryAfterSeconds: number };
+
+/**
+ * D1-backed fixed-window counter keyed on the identity cookie *and* the client
+ * IP, so clearing cookies does not reset the budget.
+ *
+ * Fails open on a storage error, deliberately: the AI call already carries a
+ * hard token cap and an 18 s timeout, so a brief unmetered window is a bounded
+ * cost, whereas failing closed would take the feature down on any D1 hiccup.
+ * The failure is logged rather than swallowed so it is visible in tail logs.
+ */
+async function consumeAiQuota(
+  env: Env,
+  identity: Identity,
+  request: Request
+): Promise<QuotaVerdict> {
+  const windowStartMs = Math.floor(Date.now() / AI_WINDOW_MS) * AI_WINDOW_MS;
+  const retryAfterSeconds = Math.max(
+    1,
+    Math.ceil((windowStartMs + AI_WINDOW_MS - Date.now()) / 1000)
+  );
+  if (!env.ATLAS_DB) return { allowed: true, retryAfterSeconds };
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  const bucketKey = `${windowStartMs}:${identity.id}:${ip}`.slice(0, 200);
+  try {
+    const row = await env.ATLAS_DB.prepare(
+      "INSERT INTO atlas_ai_usage (bucket_key, window_start, hits) VALUES (?, ?, 1) ON CONFLICT(bucket_key) DO UPDATE SET hits = hits + 1 RETURNING hits"
+    )
+      .bind(bucketKey, windowStartMs)
+      .first<{ hits: number }>();
+    const hits = row?.hits ?? 1;
+    if (hits === 1) {
+      // First hit of a new window: drop counters from windows that can no
+      // longer be consulted. Once per hour per caller, so effectively free.
+      await env.ATLAS_DB.prepare(
+        "DELETE FROM atlas_ai_usage WHERE window_start < ?"
+      )
+        .bind(windowStartMs - AI_WINDOW_MS)
+        .run();
+    }
+    return { allowed: hits <= AI_REQUESTS_PER_WINDOW, retryAfterSeconds };
+  } catch (error) {
+    console.error("atlas: AI quota check failed, allowing request", error);
+    return { allowed: true, retryAfterSeconds };
+  }
+}
+
+function rateLimited(retryAfterSeconds: number) {
+  return json(
+    {
+      error: "Too many AI generations. Try again shortly.",
+      retryAfterSeconds,
+    },
+    429,
+    { "retry-after": String(retryAfterSeconds) }
+  );
+}
+
 async function runJsonModel(
   env: Env,
-  model: string,
   messages: Array<{ role: string; content: string }>,
   schema: Record<string, unknown>
 ) {
   if (!env.AI) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    const generation = env.AI.run(AI_MODEL, {
+      messages,
+      temperature: AI_TEMPERATURE,
+      max_tokens: AI_MAX_TOKENS,
+      response_format: { type: "json_schema", json_schema: schema },
+    });
+    // A rejection arriving after the timeout has already won the race would
+    // otherwise surface as an unhandled rejection, so it is absorbed here.
+    generation.catch(error => {
+      console.error("atlas: AI generation failed", error);
+    });
     const response = await Promise.race([
-      env.AI.run(model, {
-        messages,
-        temperature: 0.2,
-        max_tokens: 2600,
-        response_format: { type: "json_schema", json_schema: schema },
+      generation,
+      new Promise<null>(resolve => {
+        timer = setTimeout(() => resolve(null), AI_TIMEOUT_MS);
       }),
-      new Promise<null>(resolve => setTimeout(() => resolve(null), 18000)),
     ]);
     return parseAiPayload(response);
-  } catch {
+  } catch (error) {
+    console.error("atlas: AI generation error", error);
     return null;
+  } finally {
+    // Without this the timer keeps the invocation alive for the full 18 s even
+    // when the model answered in 400 ms.
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
-async function aiRoadmapResponse(request: Request, env: Env) {
+async function aiRoadmapResponse(
+  request: Request,
+  env: Env,
+  identity: Identity
+) {
   let input: AiRoadmapRequest;
   try {
     input = (await request.json()) as AiRoadmapRequest;
@@ -366,9 +533,12 @@ async function aiRoadmapResponse(request: Request, env: Env) {
     : "";
   const system = `You are Atlas, a fast roadmap generator. Create a useful learning roadmap in one response for the requested topic. Do not ask follow-up questions. Make sensible beginner-friendly assumptions and state them. Return exactly 12 to 16 concise nodes grouped into 4 to 5 sequential phases. Use stable ids like phase-1-topic-1, with no spaces. Each node must have a short description, explanation, practice task, and observable checkpoint; keep each field to one sentence. Prefer a clear core spine with a few alternatives or optional nodes. Edges must connect only existing node IDs and form a readable progression. This is an AI-generated roadmap, so do not claim it is official or that resources were verified.`;
   const user = `Topic: ${topic}\nLearner level: ${level}\nLearner goal: ${goal}\nAvailable time: ${hours} hours per week${reference}`;
+  // Metered before the model call, not before validation: a malformed body
+  // should not cost the caller part of their hourly budget.
+  const quota = await consumeAiQuota(env, identity, request);
+  if (!quota.allowed) return rateLimited(quota.retryAfterSeconds);
   const generated = await runJsonModel(
     env,
-    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -376,12 +546,6 @@ async function aiRoadmapResponse(request: Request, env: Env) {
     ROADMAP_SCHEMA
   );
   if (!generated) {
-    const slug =
-      topic
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-|-$/g, "")
-        .slice(0, 60) || "learning";
     const defaults = [
       "Foundations",
       "Core concepts",
@@ -408,10 +572,7 @@ async function aiRoadmapResponse(request: Request, env: Env) {
         "Atlas used a general-purpose progression because the AI service was unavailable.",
       ],
       nodes: defaults,
-      edges: defaults.slice(1).map((node, index) => ({
-        source: defaults[index].id,
-        target: node.id,
-      })),
+      edges: chainEdges(defaults),
     });
   }
   const rawNodes = Array.isArray(generated.nodes)
@@ -472,10 +633,7 @@ async function aiRoadmapResponse(request: Request, env: Env) {
         "Atlas replaced an incomplete provider response with a general-purpose progression.",
       ],
       nodes: fallbackNodes,
-      edges: fallbackNodes.slice(1).map((node, index) => ({
-        source: fallbackNodes[index].id,
-        target: node.id,
-      })),
+      edges: chainEdges(fallbackNodes),
     });
   }
   const valid = new Set(nodes.map(node => node.id));
@@ -509,7 +667,7 @@ async function aiRoadmapResponse(request: Request, env: Env) {
   });
 }
 
-async function aiPlanResponse(request: Request, env: Env) {
+async function aiPlanResponse(request: Request, env: Env, identity: Identity) {
   let input: AiPlanRequest;
   try {
     input = (await request.json()) as AiPlanRequest;
@@ -543,9 +701,12 @@ async function aiPlanResponse(request: Request, env: Env) {
     .join("\n");
   const system = `You are Atlas, a careful AI learning coach. Generate an explainable learning plan grounded only in the supplied roadmap metadata and topic candidates. Never invent topic IDs, topic titles, prerequisites, resources, or facts not supported by the input. Select only topic IDs from the candidates. Prefer a coherent progression: foundations before applications when the supplied sequence suggests it. Treat the learner's goal, current level, available hours, pace, completed topics, and notes as constraints. If the goal is ambiguous, set clarifyingNeeded true and ask at most two high-value follow-up questions, but still provide a useful provisional plan. Keep each phase concrete and actionable. Do not mention private roadmap.sh internals.`;
   const user = `Learner goal: ${goal}\nCurrent level: ${level}\nHours per week: ${hours}\nDepth/pace: ${pace}\nRoadmap: ${roadmap.title} (${roadmap.slug})\nDescription: ${roadmap.description}\nCompleted topic IDs: ${completedIds.join(", ") || "none"}\nLearner notes:\n${notes || "none"}\n\nCandidate topics:\n${context}`;
+  // Metered before the model call, not before validation: a malformed body
+  // should not cost the caller part of their hourly budget.
+  const quota = await consumeAiQuota(env, identity, request);
+  if (!quota.allowed) return rateLimited(quota.retryAfterSeconds);
   const generated = await runJsonModel(
     env,
-    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -593,7 +754,7 @@ async function aiPlanResponse(request: Request, env: Env) {
   });
 }
 
-async function aiChatResponse(request: Request, env: Env) {
+async function aiChatResponse(request: Request, env: Env, identity: Identity) {
   let input: AiChatRequest;
   try {
     input = (await request.json()) as AiChatRequest;
@@ -630,9 +791,12 @@ async function aiChatResponse(request: Request, env: Env) {
     .join("\n");
   const system = `You are Atlas AI Tutor inside the ${roadmap.title} roadmap. Answer as a precise, encouraging learning coach. You can explain concepts, recommend what to learn next, use progress to avoid completed topics, surface public topic resources only when the user asks and the client can display them, and suggest a small action. Ground claims in the supplied roadmap context. Never invent a topic ID, resource, or roadmap fact. If you propose an action, use only complete, uncomplete, save_note, or recommend_next. Keep the answer under 350 words and include 2-3 useful suggested prompts.`;
   const user = `Roadmap: ${roadmap.title} (${roadmap.slug})\nDescription: ${roadmap.description}\nCompleted topic IDs: ${progress.join(", ") || "none"}\nLearner notes:\n${notes || "none"}\nRecent conversation:\n${history || "none"}\n\nTopic context:\n${context}\n\nLearner question: ${question}`;
+  // Metered before the model call, not before validation: a malformed body
+  // should not cost the caller part of their hourly budget.
+  const quota = await consumeAiQuota(env, identity, request);
+  if (!quota.allowed) return rateLimited(quota.retryAfterSeconds);
   const generated = await runJsonModel(
     env,
-    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -783,36 +947,126 @@ function withAssetCacheHeaders(response: Response, pathname: string) {
   });
 }
 
-async function stateResponse(request: Request, env: Env) {
+/**
+ * Tolerant boolean coercion. The typed client sends real booleans, but `1` and
+ * `"true"` are common enough from hand-rolled callers to be worth accepting;
+ * anything else is false rather than truthy, so the string `"false"` no longer
+ * marks a topic complete.
+ */
+const flag = (value: unknown) =>
+  value === true || value === 1 || value === "true";
+
+/**
+ * Parses an untrusted request body into a `StateAction`, returning null for
+ * anything unrecognised so the caller can answer 400.
+ *
+ * Every field goes through `text()` / `number()`. The previous handler called
+ * `.slice()` straight on `input.note` and `input.goal`, so a body with a number
+ * in either field threw a TypeError mid-handler and surfaced as a 500.
+ */
+export function parseStateAction(body: unknown): StateAction | null {
+  if (!body || typeof body !== "object") return null;
+  const raw = body as Record<string, unknown>;
+  const actionId = text(raw.actionId, 120) || undefined;
+  const roadmapSlug = text(raw.roadmapSlug, 160).trim();
+  const topicId = text(raw.topicId, 200).trim();
+  switch (text(raw.action, 40)) {
+    case "snapshot":
+      return { action: "snapshot", actionId };
+    case "favorite":
+      if (!roadmapSlug) return null;
+      return {
+        action: "favorite",
+        roadmapSlug,
+        saved: flag(raw.saved),
+        actionId,
+      };
+    case "progress":
+      if (!roadmapSlug || !topicId) return null;
+      return {
+        action: "progress",
+        roadmapSlug,
+        topicId,
+        completed: flag(raw.completed),
+        actionId,
+      };
+    case "note":
+      if (!roadmapSlug || !topicId) return null;
+      return {
+        action: "note",
+        roadmapSlug,
+        topicId,
+        note: text(raw.note, 20000),
+        actionId,
+      };
+    case "plan":
+      if (!roadmapSlug) return null;
+      return {
+        action: "plan",
+        goal: text(raw.goal, 500),
+        roadmapSlug,
+        level: text(raw.level, 60) || "beginner",
+        hours: number(raw.hours, 0, 168, 0),
+        pace: text(raw.pace, 60) || "balanced",
+        // Bounded before it is serialised: an unbounded array would let one
+        // request write an arbitrarily large TEXT blob.
+        topicIds: Array.isArray(raw.topicIds)
+          ? raw.topicIds
+              .slice(0, 200)
+              .map(value => text(value, 200))
+              .filter(Boolean)
+          : [],
+        actionId,
+      };
+    default:
+      return null;
+  }
+}
+
+async function stateResponse(request: Request, env: Env, identity: Identity) {
   if (!env.ATLAS_DB)
     return json({ error: "ATLAS_DB binding is not configured" }, 503);
-  const id = profileId(request);
-  await ensureProfile(env.ATLAS_DB, id);
-  if (request.method === "GET") return json(await snapshot(env.ATLAS_DB, id));
-  let input: StateAction;
+  // This route used to accept any method, so a GET could carry a mutation body
+  // and a DELETE was silently treated as one too.
+  if (request.method !== "GET" && request.method !== "POST")
+    return json({ error: "Method not allowed" }, 405, { allow: "GET, POST" });
+  const db = env.ATLAS_DB;
+  const id = identity.id;
+  // Reads no longer write. ensureProfile() ran on every request including
+  // GETs, which meant a D1 write on every page load.
+  if (request.method === "GET") return json(await snapshot(db, id));
+
+  let body: unknown;
   try {
-    input = (await request.json()) as StateAction;
+    body = await request.json();
   } catch {
     return json({ error: "Request body must be JSON" }, 400);
   }
+  const input = parseStateAction(body);
+  if (!input) return json({ error: "Unknown or invalid action" }, 400);
+
+  await ensureProfile(db, id);
   const timestamp = now();
   if (input.action === "favorite") {
     if (input.saved)
-      await env.ATLAS_DB.prepare(
-        "INSERT OR REPLACE INTO atlas_favorites (profile_id, roadmap_slug, created_at) VALUES (?, ?, ?)"
-      )
+      await db
+        .prepare(
+          "INSERT OR REPLACE INTO atlas_favorites (profile_id, roadmap_slug, created_at) VALUES (?, ?, ?)"
+        )
         .bind(id, input.roadmapSlug, timestamp)
         .run();
     else
-      await env.ATLAS_DB.prepare(
-        "DELETE FROM atlas_favorites WHERE profile_id = ? AND roadmap_slug = ?"
-      )
+      await db
+        .prepare(
+          "DELETE FROM atlas_favorites WHERE profile_id = ? AND roadmap_slug = ?"
+        )
         .bind(id, input.roadmapSlug)
         .run();
   } else if (input.action === "progress") {
-    await env.ATLAS_DB.prepare(
-      "INSERT OR REPLACE INTO atlas_progress (profile_id, roadmap_slug, topic_id, completed, updated_at) VALUES (?, ?, ?, ?, ?)"
-    )
+    await db
+      .prepare(
+        "INSERT OR REPLACE INTO atlas_progress (profile_id, roadmap_slug, topic_id, completed, updated_at) VALUES (?, ?, ?, ?, ?)"
+      )
       .bind(
         id,
         input.roadmapSlug,
@@ -822,77 +1076,100 @@ async function stateResponse(request: Request, env: Env) {
       )
       .run();
   } else if (input.action === "note") {
-    await env.ATLAS_DB.prepare(
-      "INSERT OR REPLACE INTO atlas_notes (profile_id, roadmap_slug, topic_id, note, updated_at) VALUES (?, ?, ?, ?, ?)"
-    )
-      .bind(
-        id,
-        input.roadmapSlug,
-        input.topicId,
-        input.note.slice(0, 20000),
-        timestamp
+    await db
+      .prepare(
+        "INSERT OR REPLACE INTO atlas_notes (profile_id, roadmap_slug, topic_id, note, updated_at) VALUES (?, ?, ?, ?, ?)"
       )
+      .bind(id, input.roadmapSlug, input.topicId, input.note, timestamp)
       .run();
   } else if (input.action === "plan") {
-    await env.ATLAS_DB.prepare(
-      "INSERT OR IGNORE INTO atlas_plans (id, profile_id, goal, roadmap_slug, level, hours, pace, topic_ids_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
+    await db
+      .prepare(
+        "INSERT OR IGNORE INTO atlas_plans (id, profile_id, goal, roadmap_slug, level, hours, pace, topic_ids_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      )
       .bind(
         `${id}:${input.actionId ?? crypto.randomUUID()}`.slice(0, 200),
         id,
-        input.goal.slice(0, 500),
+        input.goal,
         input.roadmapSlug,
         input.level,
-        Math.max(0, Math.min(168, Number(input.hours) || 0)),
+        input.hours,
         input.pace,
-        JSON.stringify(input.topicIds || []),
+        JSON.stringify(input.topicIds),
         timestamp
       )
       .run();
-  } else if (input.action !== "snapshot")
-    return json({ error: "Unknown action" }, 400);
-  return json(await snapshot(env.ATLAS_DB, id));
+  }
+  return json(await snapshot(db, id));
 }
 
-const PACKED_MVT_PATH = /^\/data\/world-mvt\/([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.pbf$/;
+const PACKED_MVT_PATH =
+  /^\/data\/world-mvt\/([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.pbf$/;
 
-async function packedMvtResponse(request: Request, env: Env): Promise<Response | null> {
+async function packedMvtResponse(
+  request: Request,
+  env: Env
+): Promise<Response | null> {
   const match = new URL(request.url).pathname.match(PACKED_MVT_PATH);
   if (!match) return null;
-  const [, releaseId, layerDirectory, zoom, x, y] = match;
+  const [, releaseId = "", layerDirectory = "", zoom = "", x = "", y = ""] =
+    match;
+  if (!releaseId || !layerDirectory || !zoom || !x || !y) return null;
   const basePath = `/data/world-mvt/${releaseId}/packed/${layerDirectory}/${zoom}/${x}`;
   const noCompression = { "accept-encoding": "identity" };
   for (let part = 0; part < 32; part += 1) {
     const suffix = part === 0 ? "" : `.${part}`;
     const indexResponse = await env.ASSETS.fetch(
-      new Request(new URL(`${basePath}${suffix}.json`, request.url), { headers: noCompression })
+      new Request(new URL(`${basePath}${suffix}.json`, request.url), {
+        headers: noCompression,
+      })
     );
     const contentType = indexResponse.headers.get("content-type") || "";
     if (!indexResponse.ok || !contentType.includes("json")) {
       if (part === 0) return new Response(null, { status: 404 });
       break;
     }
-    const index = (await indexResponse.json()) as Record<string, [number, number]>;
+    const index = (await indexResponse.json()) as Record<
+      string,
+      [number, number]
+    >;
     const entry = index[y];
     if (!entry) continue;
     const [offset, length] = entry;
-    if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length <= 0) return new Response(null, { status: 502 });
+    if (
+      !Number.isInteger(offset) ||
+      !Number.isInteger(length) ||
+      offset < 0 ||
+      length <= 0
+    )
+      return new Response(null, { status: 502 });
     const shardResponse = await env.ASSETS.fetch(
       new Request(new URL(`${basePath}${suffix}.bin`, request.url), {
-        headers: { ...noCompression, range: `bytes=${offset}-${offset + length - 1}` },
+        headers: {
+          ...noCompression,
+          range: `bytes=${offset}-${offset + length - 1}`,
+        },
       })
     );
     if (!shardResponse.ok) return new Response(null, { status: 404 });
     const payload = new Uint8Array(await shardResponse.arrayBuffer());
-    const start = shardResponse.status === 206 || payload.byteLength === length ? 0 : offset;
-    if (start + length > payload.byteLength) return new Response(null, { status: 502 });
+    const start =
+      shardResponse.status === 206 || payload.byteLength === length
+        ? 0
+        : offset;
+    if (start + length > payload.byteLength)
+      return new Response(null, { status: 502 });
     const headers = new Headers({
       "content-type": "application/x-protobuf",
       "cache-control": "public, max-age=31536000, immutable",
       "content-length": String(length),
     });
-    if (request.method === "HEAD") return new Response(null, { status: 200, headers });
-    return new Response(payload.slice(start, start + length), { status: 200, headers });
+    if (request.method === "HEAD")
+      return new Response(null, { status: 200, headers });
+    return new Response(payload.slice(start, start + length), {
+      status: 200,
+      headers,
+    });
   }
   return new Response(null, { status: 404 });
 }
@@ -904,24 +1181,45 @@ export default {
       const packed = await packedMvtResponse(request, env);
       if (packed) return packed;
     }
-    if (url.pathname === "/api/state") return stateResponse(request, env);
-    if (url.pathname === "/api/ai/roadmap" && request.method === "POST")
-      return aiRoadmapResponse(request, env);
-    if (url.pathname === "/api/ai/plan" && request.method === "POST")
-      return aiPlanResponse(request, env);
-
-    if (url.pathname === "/api/ai/chat" && request.method === "POST")
-      return aiChatResponse(request, env);
-    if (request.method === "OPTIONS")
-      return new Response(null, {
-        status: 204,
-        headers: {
-          ...jsonHeaders,
-          "access-control-allow-origin": "*",
-          "access-control-allow-methods": "GET,POST,OPTIONS",
-          "access-control-allow-headers": "content-type,x-atlas-profile",
-        },
-      });
+    // Identity is resolved once per request and the Set-Cookie attached on the
+    // way out, so an AI call from a first-time visitor mints the same profile
+    // the following /api/state read will use.
+    //
+    // The CORS preflight handler that used to live here returned
+    // `access-control-allow-origin: *` while every real response returned no
+    // such header, so it advertised cross-origin access the API never granted.
+    // This API has one consumer — the SPA served from the same origin — so
+    // same-origin only is the correct policy and the preflight is gone.
+    if (url.pathname.startsWith("/api/")) {
+      const identity = resolveIdentity(request);
+      const handled = await apiResponse(request, env, url, identity);
+      if (handled) return withIdentityCookie(handled, identity);
+    }
     return withAssetCacheHeaders(await env.ASSETS.fetch(request), url.pathname);
   },
 };
+
+async function apiResponse(
+  request: Request,
+  env: Env,
+  url: URL,
+  identity: Identity
+): Promise<Response | null> {
+  if (url.pathname === "/api/state")
+    return stateResponse(request, env, identity);
+  // These used to fall through to the SPA shell on a non-POST, answering 200
+  // with HTML where a client expected either JSON or a method error.
+  if (url.pathname === "/api/ai/roadmap")
+    return request.method === "POST"
+      ? aiRoadmapResponse(request, env, identity)
+      : json({ error: "Method not allowed" }, 405, { allow: "POST" });
+  if (url.pathname === "/api/ai/plan")
+    return request.method === "POST"
+      ? aiPlanResponse(request, env, identity)
+      : json({ error: "Method not allowed" }, 405, { allow: "POST" });
+  if (url.pathname === "/api/ai/chat")
+    return request.method === "POST"
+      ? aiChatResponse(request, env, identity)
+      : json({ error: "Method not allowed" }, 405, { allow: "POST" });
+  return null;
+}

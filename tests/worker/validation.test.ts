@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  bodyNumber,
+  bodyText,
   chainEdges,
   compactTopics,
   number,
@@ -26,8 +28,10 @@ const topic = (id: string, title = `Title ${id}`): TopicContext => ({
 
 describe("text", () => {
   it("coerces non-strings instead of throwing", () => {
-    // This is the guard the mutation handlers are missing: `input.note.slice()`
-    // on a number is a TypeError, while text() returns a string.
+    // `text()` is the tolerant reader, for query parameters and model output
+    // where something string-shaped is all that is on offer. Request-body
+    // fields go through bodyText() instead, which refuses these rather than
+    // storing them.
     expect(text(123)).toBe("123");
     expect(text(null)).toBe("");
     expect(text(undefined)).toBe("");
@@ -69,6 +73,50 @@ describe("number", () => {
   it("accepts numeric strings", () => {
     expect(number("7", 0, 10, 1)).toBe(7);
     expect(number("7.5", 0, 10, 1)).toBe(7.5);
+  });
+});
+
+describe("bodyText", () => {
+  it("reads a string and bounds it", () => {
+    expect(bodyText("note", 20)).toBe("note");
+    expect(bodyText("abcdef", 3)).toBe("abc");
+    expect(bodyText(`a${NUL}b`, 20)).toBe("ab");
+  });
+
+  it("treats absent as empty so optional fields keep their defaults", () => {
+    expect(bodyText(undefined, 20)).toBe("");
+    expect(bodyText(null, 20)).toBe("");
+  });
+
+  it("returns null for a present value that is not a string", () => {
+    expect(bodyText(123, 20)).toBeNull();
+    expect(bodyText(true, 20)).toBeNull();
+    expect(bodyText({}, 20)).toBeNull();
+    expect(bodyText([], 20)).toBeNull();
+    expect(bodyText(() => "x", 20)).toBeNull();
+  });
+});
+
+describe("bodyNumber", () => {
+  it("clamps a real number into range", () => {
+    expect(bodyNumber(5, 0, 10, 1)).toBe(5);
+    expect(bodyNumber(-5, 0, 10, 1)).toBe(0);
+    expect(bodyNumber(50, 0, 10, 1)).toBe(10);
+  });
+
+  it("falls back only when the field is absent", () => {
+    expect(bodyNumber(undefined, 0, 10, 3)).toBe(3);
+    expect(bodyNumber(null, 0, 10, 3)).toBe(3);
+  });
+
+  it("returns null rather than silently substituting a fallback", () => {
+    // number() accepts these: "7" parses, and "nope" becomes the fallback. In a
+    // request body both are the caller getting the type wrong.
+    expect(bodyNumber("7", 0, 10, 3)).toBeNull();
+    expect(bodyNumber("nope", 0, 10, 3)).toBeNull();
+    expect(bodyNumber(Number.NaN, 0, 10, 3)).toBeNull();
+    expect(bodyNumber(Number.POSITIVE_INFINITY, 0, 10, 3)).toBeNull();
+    expect(bodyNumber({}, 0, 10, 3)).toBeNull();
   });
 });
 
@@ -206,23 +254,35 @@ describe("parseStateAction", () => {
     expect(parseStateAction({ action: "plan" })).toBeNull();
   });
 
-  it("coerces a non-string note instead of throwing", () => {
-    // `input.note.slice(0, 20000)` on a number was a TypeError inside the
-    // handler, which surfaced as a 500.
-    expect(
+  it("refuses a non-string note instead of coercing or throwing", () => {
+    // Two bugs, one line. `input.note.slice(0, 20000)` on a number was a
+    // TypeError inside the handler, which surfaced as a 500. Routing it through
+    // `text()` stopped the crash but coerced instead: a live POST of
+    // `{"action":"note","note":{"a":1}}` returned 200 and stored the literal
+    // string "[object Object]" under the caller's profile. Neither is right —
+    // the request is malformed, so it gets a 400 and nothing is written.
+    const note = (value: unknown) =>
       parseStateAction({
         action: "note",
         roadmapSlug: "a",
         topicId: "t",
-        note: 123,
-      })
-    ).toEqual({
+        note: value,
+      });
+    expect(note(123)).toBeNull();
+    expect(note({ a: 1 })).toBeNull();
+    expect(note(["x"])).toBeNull();
+    expect(note(true)).toBeNull();
+    expect(note("real note")).toEqual({
       action: "note",
       roadmapSlug: "a",
       topicId: "t",
-      note: "123",
+      note: "real note",
       actionId: undefined,
     });
+    // Absent and null still clear the note rather than failing, because that is
+    // how the client empties one.
+    expect(note(undefined)?.action === "note" && note(undefined)?.note).toBe("");
+    expect(note(null)?.action === "note" && note(null)?.note).toBe("");
   });
 
   it("truncates an oversized note", () => {
@@ -256,25 +316,46 @@ describe("parseStateAction", () => {
     const parsed = parseStateAction({
       action: "plan",
       roadmapSlug: "frontend",
-      goal: 42,
+      goal: "ship something",
       hours: 9999,
       topicIds: Array.from({ length: 500 }, (_, index) => `t${index}`),
     });
     if (parsed?.action !== "plan") throw new Error("expected a plan action");
     expect(parsed.hours).toBe(168);
-    expect(parsed.goal).toBe("42");
+    expect(parsed.goal).toBe("ship something");
     expect(parsed.level).toBe("beginner");
     expect(parsed.pace).toBe("balanced");
     expect(parsed.topicIds).toHaveLength(200);
   });
 
-  it("defaults a non-array topicIds to empty rather than failing", () => {
-    const parsed = parseStateAction({
-      action: "plan",
-      roadmapSlug: "frontend",
-      topicIds: "html",
-    });
-    expect(parsed?.action === "plan" && parsed.topicIds).toEqual([]);
+  it("refuses a plan whose fields are the wrong type", () => {
+    const plan = (extra: Record<string, unknown>) =>
+      parseStateAction({ action: "plan", roadmapSlug: "frontend", ...extra });
+    expect(plan({ goal: 42 })).toBeNull();
+    expect(plan({ level: ["deep"] })).toBeNull();
+    expect(plan({ pace: 3 })).toBeNull();
+    // "whenever" used to become 0 hours, so a plan came back built on a number
+    // the caller never sent.
+    expect(plan({ hours: "whenever" })).toBeNull();
+    expect(plan({ hours: Number.NaN })).toBeNull();
+    // A non-array topicIds used to parse as an empty plan; a string of topic
+    // ids is a caller mistake worth reporting, not an empty list.
+    expect(plan({ topicIds: "html" })).toBeNull();
+    expect(plan({ topicIds: [1, 2] })).toBeNull();
+    expect(plan({ topicIds: ["html", null] })).toBeNull();
+    // Absent optional fields still fall back.
+    expect(plan({})?.action === "plan").toBe(true);
+    expect(plan({ topicIds: [] })?.action === "plan").toBe(true);
+  });
+
+  it("refuses wrong-typed identifiers on every action", () => {
+    expect(parseStateAction({ action: "favorite", roadmapSlug: 7 })).toBeNull();
+    expect(
+      parseStateAction({ action: "progress", roadmapSlug: "a", topicId: {} })
+    ).toBeNull();
+    expect(
+      parseStateAction({ action: "snapshot", actionId: ["dup"] })
+    ).toBeNull();
   });
 
   it("accepts a bare snapshot", () => {

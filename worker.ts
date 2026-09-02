@@ -972,29 +972,76 @@ const flag = (value: unknown) =>
   value === true || value === 1 || value === "true";
 
 /**
+ * Reads a string field out of an untrusted request body.
+ *
+ * `text()` coerces — `String(value ?? "")` — which is right for a query
+ * parameter or a model's output, where something string-shaped is all that is
+ * on offer. It is wrong for a JSON body, because coercion succeeds on values
+ * that cannot have been meant: `{"action":"note","note":{"a":1}}` returned 200
+ * and persisted the literal string `"[object Object]"` under the caller's
+ * profile. Storing nonsense is worse than refusing it, so a present field of
+ * the wrong type is a malformed request and gets a 400.
+ *
+ * Absent is not wrong: `undefined` and `null` read as `""` so optional fields
+ * keep their defaults, which is what the typed client relies on.
+ *
+ * Returns `null` for "present but not a string" — the caller turns that into a
+ * 400 the same way it does an unknown action.
+ */
+export function bodyText(value: unknown, max: number): string | null {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "string") return null;
+  return text(value, max);
+}
+
+/**
+ * The numeric counterpart. `number()` falls back on anything unparseable, so
+ * `{"hours":"whenever"}` silently became 0 hours; a plan built on a number the
+ * caller never sent is not a plan it can trust. Absent still falls back.
+ */
+export function bodyNumber(
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number
+): number | null {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
  * Parses an untrusted request body into a `StateAction`, returning null for
  * anything unrecognised so the caller can answer 400.
  *
- * Every field goes through `text()` / `number()`. The previous handler called
- * `.slice()` straight on `input.note` and `input.goal`, so a body with a number
- * in either field threw a TypeError mid-handler and surfaced as a 500.
+ * Every field goes through `bodyText()` / `bodyNumber()`, which refuse a present
+ * value of the wrong type. The first version of this handler called `.slice()`
+ * straight on `input.note` and `input.goal`, so a number in either field threw a
+ * TypeError mid-handler and surfaced as a 500; routing them through `text()`
+ * stopped the crash but coerced instead, storing `"[object Object]"`. Neither is
+ * right — a malformed body is a 400 and nothing is written.
  */
 export function parseStateAction(body: unknown): StateAction | null {
   if (!body || typeof body !== "object") return null;
   const raw = body as Record<string, unknown>;
-  const actionId = text(raw.actionId, 120) || undefined;
-  const roadmapSlug = text(raw.roadmapSlug, 160).trim();
-  const topicId = text(raw.topicId, 200).trim();
+  const actionId = bodyText(raw.actionId, 120);
+  const roadmapSlugRaw = bodyText(raw.roadmapSlug, 160);
+  const topicIdRaw = bodyText(raw.topicId, 200);
+  if (actionId === null || roadmapSlugRaw === null || topicIdRaw === null) {
+    return null;
+  }
+  const roadmapSlug = roadmapSlugRaw.trim();
+  const topicId = topicIdRaw.trim();
   switch (text(raw.action, 40)) {
     case "snapshot":
-      return { action: "snapshot", actionId };
+      return { action: "snapshot", actionId: actionId || undefined };
     case "favorite":
       if (!roadmapSlug) return null;
       return {
         action: "favorite",
         roadmapSlug,
         saved: flag(raw.saved),
-        actionId,
+        actionId: actionId || undefined,
       };
     case "progress":
       if (!roadmapSlug || !topicId) return null;
@@ -1003,36 +1050,57 @@ export function parseStateAction(body: unknown): StateAction | null {
         roadmapSlug,
         topicId,
         completed: flag(raw.completed),
-        actionId,
+        actionId: actionId || undefined,
       };
-    case "note":
+    case "note": {
       if (!roadmapSlug || !topicId) return null;
+      const note = bodyText(raw.note, 20000);
+      if (note === null) return null;
       return {
         action: "note",
         roadmapSlug,
         topicId,
-        note: text(raw.note, 20000),
-        actionId,
+        note,
+        actionId: actionId || undefined,
       };
-    case "plan":
+    }
+    case "plan": {
       if (!roadmapSlug) return null;
+      const goal = bodyText(raw.goal, 500);
+      const level = bodyText(raw.level, 60);
+      const pace = bodyText(raw.pace, 60);
+      const hours = bodyNumber(raw.hours, 0, 168, 0);
+      if (goal === null || level === null || pace === null || hours === null) {
+        return null;
+      }
+      // Bounded before it is serialised: an unbounded array would let one
+      // request write an arbitrarily large TEXT blob. A non-array `topicIds`,
+      // or one holding anything but strings, is a malformed request rather
+      // than an empty plan — the old code accepted both silently.
+      let topicIds: string[] = [];
+      if (raw.topicIds !== undefined && raw.topicIds !== null) {
+        if (!Array.isArray(raw.topicIds)) return null;
+        // Entries are checked directly rather than through bodyText(): inside a
+        // list, `null` is not the "field omitted" case that bodyText() forgives,
+        // so routing it through there would read as `""` and quietly vanish in
+        // the filter below.
+        if (raw.topicIds.some(entry => typeof entry !== "string")) return null;
+        topicIds = raw.topicIds
+          .slice(0, 200)
+          .map(entry => text(entry, 200).trim())
+          .filter(Boolean);
+      }
       return {
         action: "plan",
-        goal: text(raw.goal, 500),
+        goal,
         roadmapSlug,
-        level: text(raw.level, 60) || "beginner",
-        hours: number(raw.hours, 0, 168, 0),
-        pace: text(raw.pace, 60) || "balanced",
-        // Bounded before it is serialised: an unbounded array would let one
-        // request write an arbitrarily large TEXT blob.
-        topicIds: Array.isArray(raw.topicIds)
-          ? raw.topicIds
-              .slice(0, 200)
-              .map(value => text(value, 200))
-              .filter(Boolean)
-          : [],
-        actionId,
+        level: level || "beginner",
+        hours,
+        pace: pace || "balanced",
+        topicIds,
+        actionId: actionId || undefined,
       };
+    }
     default:
       return null;
   }

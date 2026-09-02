@@ -627,7 +627,14 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         onViewChangeRef.current?.(toView(map));
       });
       map.on("move", syncCamera);
-      map.on("resize", () => map.resize());
+      // No `map.on("resize", …)` here. `map.resize()` fires MapLibre's own
+      // `resize` event, so a handler that calls `map.resize()` re-enters itself
+      // and only stops by exhausting the stack: the browser console recorded 128
+      // nested Map.resize → Map.fire → handler frames ending in
+      // `RangeError: Maximum call stack size exceeded` inside
+      // GlobeTransform._calcMatrices. Container size changes are already driven
+      // by the ResizeObserver below, which is the non-recursive edge of the same
+      // loop; MapLibre's own `trackResize` covers the window.
       map.on("click", event => {
         // Single hit-test path. The d3 `geoContains` branch that used to run
         // first inverted a projection the renderer no longer uses, and culled

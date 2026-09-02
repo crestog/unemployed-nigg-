@@ -281,8 +281,10 @@ describe("parseStateAction", () => {
     });
     // Absent and null still clear the note rather than failing, because that is
     // how the client empties one.
-    expect(note(undefined)?.action === "note" && note(undefined)?.note).toBe("");
-    expect(note(null)?.action === "note" && note(null)?.note).toBe("");
+    for (const absent of [undefined, null]) {
+      const parsed = note(absent);
+      expect(parsed?.action === "note" && parsed.note).toBe("");
+    }
   });
 
   it("truncates an oversized note", () => {

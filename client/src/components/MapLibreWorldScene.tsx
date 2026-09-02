@@ -1,5 +1,4 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { geoArea, geoContains, geoOrthographic, geoPath } from "d3-geo";
 import { LngLatBounds, Map as MapLibreMapClass, setWorkerUrl } from "maplibre-gl";
 import type { GeoJSONSource, Map as MapLibreMap, MapGeoJSONFeature, StyleSpecification } from "maplibre-gl";
 import type { GlobalMvtManifest } from "@/lib/worldMvt";
@@ -75,148 +74,45 @@ type Props = {
 };
 
 const MAP_MAX_ZOOM = 24;
-const GLOBE_MAX_ZOOM = 4.6;
-
-type ScreenPoint = [number, number];
-type GlobeProjection = ReturnType<typeof geoOrthographic>;
-
-function globeProjection(map: MapLibreMap, width: number, height: number): GlobeProjection {
-  const center = map.getCenter();
-  const radius = Math.max(80, Math.min(width, height) * 0.48 * Math.pow(2, map.getZoom() - 1.25));
-  return geoOrthographic()
-    .translate([width / 2, height / 2])
-    .scale(Math.min(Math.max(radius, 80), Math.max(width, height) * 1.18))
-    .rotate([-center.lng, -center.lat, -map.getBearing()])
-    .clipAngle(90);
-}
-
-function drawGlobeOverview(
-  canvas: HTMLCanvasElement,
-  map: MapLibreMap,
-  countries: CountryRecord[],
-  labels: CountryLabelRecord[],
-) {
-  const rect = canvas.getBoundingClientRect();
-  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
-  const width = Math.max(1, rect.width);
-  const height = Math.max(1, rect.height);
-  const backingWidth = Math.max(1, Math.round(width * pixelRatio));
-  const backingHeight = Math.max(1, Math.round(height * pixelRatio));
-  if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
-    canvas.width = backingWidth;
-    canvas.height = backingHeight;
-  }
-  const context = canvas.getContext("2d");
-  if (!context) return;
-  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  context.clearRect(0, 0, width, height);
-
-  const projection = globeProjection(map, width, height);
-  const path = geoPath(projection, context);
-  context.beginPath();
-  path({ type: "Sphere" } as unknown as GeoJSON.GeoJSON);
-  context.fillStyle = "#061423";
-  context.fill();
-  context.strokeStyle = "rgba(118, 213, 197, 0.28)";
-  context.lineWidth = 1.2;
-  context.stroke();
-
-  const orderedCountries = [...countries].sort((a, b) => Number(a.selected) - Number(b.selected));
-  orderedCountries.forEach(country => {
-    context.beginPath();
-    path(country.feature as GeoJSON.GeoJSON);
-    context.fillStyle = country.color;
-    context.globalAlpha = country.visible ? (country.selected ? 0.86 : 0.72) : 0.22;
-    context.fill("evenodd");
-    context.strokeStyle = country.selected ? "#f5d78c" : "rgba(16, 38, 54, 0.82)";
-    context.lineWidth = country.selected ? 1.5 : 0.7;
-    context.globalAlpha = 1;
-    context.stroke();
-  });
-
-  const globeRadius = projection.scale();
-  const mobile = width <= 640;
-  const labelSize = mobile
-    ? Math.max(8.5, Math.min(11, 8.8 + (map.getZoom() - 1.25) * 0.8))
-    : Math.max(10, Math.min(18, 10 + (map.getZoom() - 1.25) * 1.6));
-  context.font = `600 ${labelSize}px "Open Sans", Arial, sans-serif`;
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  const occupied: Array<{ x: number; y: number; width: number; height: number }> = [];
-  const visibleCountryIds = new Set(countries.filter(country => country.visible).map(country => country.id));
-  const labelCandidates = labels
-    .filter(label => label.label && visibleCountryIds.has(label.id))
-    .map(label => ({
-      label,
-      point: projection([label.longitude, label.latitude]),
-      priority: label.selected ? 0 : label.id === "010" ? 1 : 2,
-      area: label.area ?? 0,
-    }))
-    .filter(item => item.point && Number.isFinite(item.point[0]) && Number.isFinite(item.point[1]))
-    .sort((a, b) => a.priority - b.priority || b.area - a.area || a.label.name.length - b.label.name.length)
-    .slice(0, mobile ? 34 : Number.POSITIVE_INFINITY);
-
-  labelCandidates.forEach(({ label, point }) => {
-    if (!point) return;
-    const [x, y] = point;
-    const widthWithHalo = context.measureText(label.name).width + 12;
-    const heightWithHalo = labelSize + 8;
-    if (Math.hypot(x - width / 2, y - height / 2) > globeRadius - 4) return;
-    const box = { x: x - widthWithHalo / 2, y: y - heightWithHalo / 2, width: widthWithHalo, height: heightWithHalo };
-    if (box.x < 3 || box.y < 3 || box.x + box.width > width - 3 || box.y + box.height > height - 3) return;
-    if (occupied.some(other => box.x < other.x + other.width && box.x + box.width > other.x && box.y < other.y + other.height && box.y + box.height > other.y)) return;
-    occupied.push(box);
-    context.lineWidth = 3;
-    context.strokeStyle = "rgba(6, 20, 35, 0.94)";
-    context.strokeText(label.name, x, y);
-    context.fillStyle = label.selected ? "#fff0bb" : "#dbfff6";
-    context.fillText(label.name, x, y);
-  });
-  context.globalAlpha = 1;
-}
-
-function globeCoordinateAtPoint(map: MapLibreMap, point: { x: number; y: number }, width: number, height: number): [number, number] | null {
-  const projection = globeProjection(map, width, height);
-  const coordinate = projection.invert?.([point.x, point.y]);
-  if (!coordinate || !Number.isFinite(coordinate[0]) || !Number.isFinite(coordinate[1])) return null;
-  return [coordinate[0], coordinate[1]];
-}
 
 function globalLabelSize(zoom: number) {
   return Math.min(22, 9 + zoom * 0.82);
 }
 
-function desiredProjection(map: MapLibreMap): "globe" | "mercator" {
-  return map.getZoom() >= GLOBE_MAX_ZOOM ? "mercator" : "globe";
-}
-
-function applyOverviewLayerVisibility(map: MapLibreMap, overview: boolean) {
-  const layers = map.getStyle?.()?.layers ?? [];
-  layers.forEach(layer => {
-    const hideInOverview =
-      layer.id === "atlas-country-fill" ||
-      layer.id === "atlas-country-line" ||
-      layer.id === "atlas-country-label" ||
-      layer.id === "atlas-locality-label" ||
-      /^atlas-adm[12]-(fill|line|label)$/.test(layer.id) ||
-      /^atlas-global-adm[1-5]-(fill|line|label)$/.test(layer.id) ||
-      layer.id === "atlas-global-places-label";
-    if (!hideInOverview || !map.getLayer(layer.id)) return;
-    const visibility = overview ? "none" : "visible";
-    if (map.getLayoutProperty(layer.id, "visibility") !== visibility) map.setLayoutProperty(layer.id, "visibility", visibility);
-  });
-}
-
-function updateProjectionAndOverviewMode(map: MapLibreMap) {
+// This scene used to render three disagreeing projections at once: MapLibre's
+// own `globe`, a `geoOrthographic` d3 canvas drawn on top of it, and (in the
+// sibling SVG explorer) `geoNaturalEarth1`. The d3 canvas was the sphere the
+// user actually saw and dragged, while the camera being driven was MapLibre's,
+// and they disagreed in four separate ways:
+//
+//   * the canvas radius was clamped to `max(w, h) * 1.18`, so past roughly
+//     zoom 3.4 on a desktop viewport the drawn sphere froze while the camera
+//     kept zooming, then hard-cut to mercator at 4.6;
+//   * `geoOrthographic().rotate([-lng, -lat, -bearing])` tilts the whole globe
+//     by latitude, whereas MapLibre's globe keeps the pole oriented and pans the
+//     centre — so anywhere off the equator the two disagreed about what was
+//     centred, and bearing was applied as a third Euler angle (roll) rather
+//     than as MapLibre's screen-space rotation;
+//   * hit-testing inverted the d3 projection and culled anything past
+//     `radius - 4`, so clicks near the limb missed, and because overview mode
+//     hid *every* MapLibre data layer there was no `queryRenderedFeatures`
+//     fallback to catch them;
+//   * `pitch` has no representation in `geoOrthographic` at all, so any pitch
+//     change invalidated the overlay outright.
+//
+// MapLibre 6.5 renders a real globe natively and transitions to mercator on its
+// own as you zoom in, so the fix is to delete the overlay rather than patch it:
+// one projection, one camera, one hit-test path.
+function ensureGlobeProjection(map: MapLibreMap) {
   if (!map.getStyle?.()) return;
-  const nextProjection = desiredProjection(map);
-  const currentProjection = map.getProjection?.()?.type;
-  const overview = nextProjection === "globe";
+  if (map.getProjection?.()?.type === "globe") return;
   try {
-    if (currentProjection !== nextProjection) map.setProjection({ type: nextProjection });
-    applyOverviewLayerVisibility(map, overview);
-  } catch {
-    // MapLibre can expose the style object one tick before its style mutation APIs are ready.
+    map.setProjection({ type: "globe" });
+  } catch (error) {
+    // MapLibre can expose the style object one tick before its style mutation
+    // APIs are ready. Previously this was a bare `catch {}`, which is why none
+    // of the projection bugs above ever produced a console error.
+    console.warn("atlas: globe projection not applied yet", error);
   }
 }
 
@@ -293,7 +189,10 @@ function atlasStyle(input: {
   return {
     version: 8,
     name: "Atlas Earth",
-    glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+    // Self-hosted from client/public/fonts (see scripts/vendor-glyphs.mjs).
+    // This used to point at demotiles.maplibre.org — MapLibre's demo server —
+    // so a third-party outage or rate limit silently removed every map label.
+    glyphs: "/fonts/{fontstack}/{range}.pbf",
     sky: {
       "sky-color": "#020817",
       "sky-horizon-blend": 0.22,
@@ -630,7 +529,6 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const globeCanvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const baseZoomRef = useRef(1.25);
   const onViewChangeRef = useRef(onViewChange);
@@ -639,7 +537,6 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   const spinEnabledRef = useRef(spinEnabled);
   const reducedMotionRef = useRef(false);
   const [styleReady, setStyleReady] = useState(false);
-  const [mapLoaded, setMapLoaded] = useState(false);
   onViewChangeRef.current = onViewChange;
   onPickRef.current = onPick;
   onUnavailableRef.current = onUnavailable;
@@ -690,7 +587,6 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
     const container = containerRef.current;
     if (!container) return;
     let map: MapLibreMap;
-    let globeFrame = 0;
     try {
       setWorkerUrl(maplibreWorkerUrl);
       map = new MapLibreMapClass({
@@ -713,57 +609,30 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       map.touchZoomRotate.enableRotation();
       map.dragRotate.enable();
       map.touchPitch.disable();
-      const redrawGlobe = () => {
-        const canvas = globeCanvasRef.current;
-        if (!canvas) return;
-        const overview = desiredProjection(map) === "globe";
-        canvas.style.opacity = overview ? "1" : "0";
-        canvas.style.visibility = overview ? "visible" : "hidden";
-        if (overview && globeFrame === 0) {
-          globeFrame = window.requestAnimationFrame(() => {
-            globeFrame = 0;
-            if (desiredProjection(map) !== "globe") return;
-            const rect = canvas.getBoundingClientRect();
-            drawGlobeOverview(canvas, map, countries, countryLabels);
-            canvas.dataset.center = `${map.getCenter().lng.toFixed(4)},${map.getCenter().lat.toFixed(4)}`;
-            canvas.dataset.size = `${rect.width}x${rect.height}`;
-          });
-        }
-      };
+      // `map.on("render", …)` used to re-path the entire countries-50m topology
+      // plus every label onto a 2D canvas on every single frame, with two forced
+      // reflows per frame from getBoundingClientRect(). The globe is MapLibre's
+      // now, so the camera listener only has to report the view upward.
       const syncCamera = () => {
-        updateProjectionAndOverviewMode(map);
-        redrawGlobe();
         onViewChangeRef.current?.(toView(map));
       };
       map.on("load", () => {
-        setMapLoaded(true);
         syncCamera();
       });
       map.on("style.load", () => {
-        map.setProjection({ type: "globe" });
+        ensureGlobeProjection(map);
         if (initialView) map.jumpTo(initialView);
         baseZoomRef.current = initialView?.zoom ?? map.getZoom();
-        updateProjectionAndOverviewMode(map);
         setStyleReady(true);
-        redrawGlobe();
         onViewChangeRef.current?.(toView(map));
       });
       map.on("move", syncCamera);
-      map.on("render", redrawGlobe);
-      map.on("resize", () => { map.resize(); redrawGlobe(); });
+      map.on("resize", () => map.resize());
       map.on("click", event => {
-        const canvas = globeCanvasRef.current;
-        if (canvas && desiredProjection(map) === "globe") {
-          const rect = canvas.getBoundingClientRect();
-          const coordinate = globeCoordinateAtPoint(map, event.point, rect.width, rect.height);
-          if (coordinate) {
-            const hit = [...countries].reverse().find(country => country.visible && geoContains(country.feature as GeoJSON.Feature, coordinate));
-            if (hit) {
-              onPickRef.current?.({ kind: "country", id: hit.id });
-              return;
-            }
-          }
-        }
+        // Single hit-test path. The d3 `geoContains` branch that used to run
+        // first inverted a projection the renderer no longer uses, and culled
+        // anything past the drawn limb, so clicks near the edge of the disc
+        // selected nothing.
         const feature = map.queryRenderedFeatures(event.point).find((candidate: MapGeoJSONFeature) => {
           const id = candidate.layer.id;
           return id === "atlas-locality-label" || id === "atlas-global-places-label" || id === "atlas-country-fill" || /atlas-global-adm[1-5]-fill$/.test(id) || /^atlas-adm[12]-fill$/.test(id);
@@ -815,15 +684,13 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
 
       return () => {
         window.cancelAnimationFrame(spinFrame);
-        if (globeFrame) window.cancelAnimationFrame(globeFrame);
         reducedMotionQuery.removeEventListener?.("change", updateReducedMotion);
         spinEvents.forEach(eventName => map.off(eventName, pauseSpin));
         resizeObserver.disconnect();
         setStyleReady(false);
-      setMapLoaded(false);
-      mapRef.current = null;
-      map.remove();
-    };
+        mapRef.current = null;
+        map.remove();
+      };
   }, [initialView]);
 
   useEffect(() => {
@@ -831,7 +698,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
     if (!map || !styleReady) return;
     if (globalMvt) {
       addGlobalMvtLayers(map, globalMvt);
-      updateProjectionAndOverviewMode(map);
+      ensureGlobeProjection(map);
     }
     sourceSetData(map, "atlas-countries", featureCollection(countries.map(asCountryFeature) as any));
     sourceSetData(map, "atlas-country-labels", featureCollection(countryLabels.map(asCountryLabelFeature) as any));
@@ -840,10 +707,11 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
     sourceSetData(map, "atlas-localities", featureCollection(localities.map(asLocalityFeature) as any));
   }, [adm1, adm2, countryLabels, countries, globalMvt, localities, styleReady]);
 
-  return       <div className="absolute inset-0 h-full w-full" data-maplibre-world>
-        <div ref={containerRef} className="absolute inset-0 h-full w-full" />
-        <canvas ref={globeCanvasRef} className="pointer-events-none absolute inset-0 h-full w-full opacity-0" aria-hidden="true" />
-      </div>;
+  return (
+    <div className="absolute inset-0 h-full w-full" data-maplibre-world>
+      <div ref={containerRef} className="absolute inset-0 h-full w-full" />
+    </div>
+  );
 });
 
 MapLibreWorldScene.displayName = "MapLibreWorldScene";

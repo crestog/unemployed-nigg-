@@ -28,13 +28,6 @@ function readFavorites() {
   }
 }
 
-function titleCaseSlug(slug: string) {
-  return slug
-    .split("-")
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
 function RoadmapCard({
   roadmap,
   favorite,
@@ -161,26 +154,33 @@ function Navigation() {
                   onClick={() => setMenu(null)}
                 >
                   <span className="block text-sm font-semibold text-white">
-                    Create a roadmap
+                    Create a learning plan
                   </span>
                   <span className="mt-1 block text-xs text-[#8996b1]">
-                    Generate a path from your goal
+                    Turn a goal into weekly phases
                   </span>
                 </Link>
+                {/* This menu used to link to /roadmaps/quiz and /roadmaps/chat.
+                    Neither had a route, so both fell through to
+                    /roadmaps/:slug and silently rendered the frontend roadmap.
+                    There is no quiz anywhere in the codebase, so that entry is
+                    gone; the tutor does exist, but it needs a roadmap and its
+                    topics for context, so it is reached from a roadmap page
+                    rather than from here. */}
                 <Link
-                  href="/roadmaps/quiz"
+                  href="/ai/roadmap"
                   className="block rounded-lg px-3 py-3 hover:bg-white/[.06]"
                   onClick={() => setMenu(null)}
                 >
                   <span className="block text-sm font-semibold text-white">
-                    Test my skills
+                    Generate a roadmap
                   </span>
                   <span className="mt-1 block text-xs text-[#8996b1]">
-                    Start with a lightweight diagnostic
+                    Build a new path for any topic
                   </span>
                 </Link>
                 <Link
-                  href="/roadmaps/chat"
+                  href="/roadmaps"
                   className="block rounded-lg px-3 py-3 hover:bg-white/[.06]"
                   onClick={() => setMenu(null)}
                 >
@@ -188,7 +188,7 @@ function Navigation() {
                     Ask Atlas Tutor
                   </span>
                   <span className="mt-1 block text-xs text-[#8996b1]">
-                    Plan your next learning step
+                    Open a roadmap and ask in context
                   </span>
                 </Link>
               </div>
@@ -244,10 +244,10 @@ function Navigation() {
               Create a learning plan
             </Link>
             <Link
-              href="/roadmaps/quiz"
+              href="/ai/roadmap"
               className="rounded-lg px-3 py-3 text-sm font-semibold text-white"
             >
-              Test my skills
+              Generate a roadmap
             </Link>
             <Link
               href="/"

@@ -1,8 +1,25 @@
+"""Prints the shape of the India geography release: layers, counts, property
+coverage and coordinate extents.
+
+A diagnostic, not part of the build. Run from anywhere:
+
+    python3 scripts/inspect_geo.py [path/to/world-india-geography.json]
+"""
+
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
-path = Path('/home/ubuntu/unemployed-nigg/client/public/data/world-india-geography.json')
+# Was an absolute /home/ubuntu/... path, so this only ran on the machine it was
+# written on. The default is now derived from the script's own location.
+DEFAULT = (
+    Path(__file__).resolve().parent.parent
+    / 'client' / 'public' / 'data' / 'world-india-geography.json'
+)
+path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT
+if not path.exists():
+    raise SystemExit(f'{path} not found; pass the release path as an argument')
 with path.open() as handle:
     data = json.load(handle)
 

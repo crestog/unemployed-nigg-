@@ -93,8 +93,27 @@ type Release = {
   manifest: Manifest;
   taxonomies: Taxonomy[];
   occupations: Occupation[];
+  /**
+   * False between the occupation index arriving and the detail file arriving
+   * behind it (scripts/split-occupations.mjs). During that window `tasks`,
+   * `skills`, `workActivities`, `software`, `preparation`, `outlook`,
+   * `relatedOccupations` and `alternateTitles` are empty arrays rather than
+   * missing, so nothing breaks — but a panel whose whole content is one of them
+   * should say it is still loading rather than claim there is none.
+   */
+  occupationDetailReady: boolean;
 };
 type Catalog = Pick<Release, "taxonomies" | "occupations">;
+
+/** `not_found_handling: single-page-application` answers a missing asset with the
+ * SPA shell at status 200, so `response.ok` is not enough to know we got JSON. */
+async function fetchJson<T>(path: string, failure: string): Promise<T> {
+  const response = await fetch(path);
+  if (!response.ok) throw new Error(failure);
+  if (!response.headers.get("content-type")?.includes("json"))
+    throw new Error(`${failure} (served the app shell, not JSON)`);
+  return (await response.json()) as T;
+}
 
 const money = (value?: number | null) =>
   value == null ? "Not available" : `$${Math.round(value).toLocaleString()}`;
@@ -384,7 +403,28 @@ function TaxonomyExplorer({ data }: { data: Release }) {
   );
 }
 
-function OccupationDetail({ occupation }: { occupation: Occupation }) {
+/**
+ * The three panels below render nothing but the arrays that live in the
+ * occupation *detail* file, which lands a beat after the index it is merged into
+ * (scripts/split-occupations.mjs). An empty array during that beat means "not
+ * here yet", not "none on record", and the two read very differently.
+ */
+function DetailPending({ ready, count }: { ready: boolean; count: number }) {
+  if (ready || count === 0) return null;
+  return (
+    <p className="mt-3 animate-pulse text-sm text-[#77766d]">
+      Loading {integer(count)} source records…
+    </p>
+  );
+}
+
+function OccupationDetail({
+  occupation,
+  detailReady,
+}: {
+  occupation: Occupation;
+  detailReady: boolean;
+}) {
   const [tab, setTab] = useState<"profile" | "tasks" | "skills">("profile");
   return (
     <div className="rounded-2xl border border-[#d1cec2] bg-[#fbfaf5] p-5 sm:p-7">
@@ -465,6 +505,10 @@ function OccupationDetail({ occupation }: { occupation: Occupation }) {
                 </Badge>
               ))}
             </div>
+            <DetailPending
+              ready={detailReady}
+              count={occupation.metrics.alternateTitleCount}
+            />
           </div>
           <div>
             <div className="coordinate-stamp">LABOR MARKET / BLS MAY 2025</div>
@@ -498,6 +542,10 @@ function OccupationDetail({ occupation }: { occupation: Occupation }) {
       )}
       {tab === "tasks" && (
         <div className="mt-6 space-y-3">
+          <DetailPending
+            ready={detailReady}
+            count={occupation.metrics.taskCount}
+          />
           {occupation.tasks.map(task => (
             <div
               key={task.id}
@@ -519,6 +567,10 @@ function OccupationDetail({ occupation }: { occupation: Occupation }) {
             <div className="coordinate-stamp">
               ESSENTIAL SKILLS / IMPORTANCE
             </div>
+            <DetailPending
+              ready={detailReady}
+              count={occupation.metrics.skillCount}
+            />
             <div className="mt-4 space-y-3">
               {occupation.skills.slice(0, 10).map(skill => (
                 <div key={skill.name}>
@@ -542,6 +594,10 @@ function OccupationDetail({ occupation }: { occupation: Occupation }) {
           </div>
           <div>
             <div className="coordinate-stamp">WORK ACTIVITIES / SOFTWARE</div>
+            <DetailPending
+              ready={detailReady}
+              count={occupation.metrics.workActivityCount}
+            />
             <div className="mt-4 flex flex-wrap gap-2">
               {occupation.workActivities.slice(0, 12).map(item => (
                 <Badge key={item}>{item}</Badge>
@@ -655,7 +711,10 @@ function OccupationExplorer({
               ))}
             </div>
           </aside>
-          <OccupationDetail occupation={selected} />
+          <OccupationDetail
+            occupation={selected}
+            detailReady={data.occupationDetailReady}
+          />
         </div>
         <div className="mt-8 rounded-2xl border border-[#d1cec2] bg-[#fbfaf5] p-5 sm:p-7">
           <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -898,11 +957,13 @@ function AtlasShell({
   catalog,
   onLoadCatalog,
   catalogLoading,
+  occupationDetailReady,
 }: {
   manifest: Manifest;
   catalog: Catalog | null;
   onLoadCatalog: () => void;
   catalogLoading: boolean;
+  occupationDetailReady: boolean;
 }) {
   const [tab, setTab] = useState<"graph" | "world" | "directory" | "roadmaps">(
     () =>
@@ -917,7 +978,7 @@ function AtlasShell({
     catalog?.occupations.find(item => item.id === selectedOccupationId) ??
     catalog?.occupations[0] ??
     null;
-  const data = catalog ? { manifest, ...catalog } : null;
+  const data = catalog ? { manifest, ...catalog, occupationDetailReady } : null;
   useEffect(() => {
     if (catalog && !selectedOccupationId) {
       setSelectedOccupationId(catalog.occupations[0]?.id ?? null);
@@ -1056,22 +1117,53 @@ export default function RealHome() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [detailReady, setDetailReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const catalogPromise = useRef<Promise<void> | null>(null);
   const loadCatalog = () => {
     if (catalog || catalogPromise.current) return;
     setCatalogLoading(true);
     const promise = Promise.all([
-      fetch("/data/taxonomies.json").then(response => {
-        if (!response.ok) throw new Error("Taxonomy release unavailable");
-        return response.json() as Promise<Taxonomy[]>;
-      }),
-      fetch("/data/occupations.json").then(response => {
-        if (!response.ok) throw new Error("Occupation release unavailable");
-        return response.json() as Promise<Occupation[]>;
-      }),
+      fetchJson<Taxonomy[]>("/data/taxonomies.json", "Taxonomy release unavailable"),
+      // Was `occupations.json`: 6.6 MB, 1,008 KB gzipped, fetched before the user
+      // had opened a single occupation. The index carries what the graph, the
+      // search box and the directory list read — 133 KB gzipped.
+      fetchJson<Occupation[]>(
+        "/data/occupations-index.json",
+        "Occupation release unavailable"
+      ),
     ])
-      .then(([taxonomies, occupations]) => setCatalog({ taxonomies, occupations }))
+      .then(([taxonomies, occupations]) => {
+        setCatalog({ taxonomies, occupations });
+        // The seven heavy arrays (tasks, skills, work activities, software,
+        // preparation, outlook, related occupations, alternate titles) only
+        // render once one occupation is open, so they load behind the
+        // now-interactive view rather than in front of it. A failure here leaves
+        // the catalog browsable, so it must not reach `setError`.
+        void fetchJson<Record<string, Partial<Occupation>>>(
+          "/data/occupations-detail.json",
+          "Occupation detail unavailable"
+        )
+          .then(detail => {
+            setCatalog(
+              current =>
+                current && {
+                  ...current,
+                  occupations: current.occupations.map(occupation => ({
+                    ...occupation,
+                    ...detail[occupation.id],
+                  })),
+                }
+            );
+            setDetailReady(true);
+          })
+          .catch((thrown: unknown) => {
+            console.error(
+              "atlas: occupation detail could not be loaded; tasks, skills and alternate titles will be empty",
+              thrown
+            );
+          });
+      })
       .catch(() =>
         setError(
           "The source catalog could not be loaded. Check that the generated data files are present."
@@ -1084,11 +1176,7 @@ export default function RealHome() {
     catalogPromise.current = promise;
   };
   useEffect(() => {
-    fetch("/data/manifest.json")
-      .then(response => {
-        if (!response.ok) throw new Error("Manifest unavailable");
-        return response.json() as Promise<Manifest>;
-      })
+    fetchJson<Manifest>("/data/manifest.json", "Manifest unavailable")
       .then(nextManifest => {
         setManifest(nextManifest);
         const initialTab = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("world") === "1" ? "world" : "graph";
@@ -1127,6 +1215,7 @@ export default function RealHome() {
       catalog={catalog}
       onLoadCatalog={loadCatalog}
       catalogLoading={catalogLoading}
+      occupationDetailReady={detailReady}
     />
   );
 

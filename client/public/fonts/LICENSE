@@ -1,0 +1,13 @@
+Open Sans is licensed under the Apache License, Version 2.0.
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+The `.pbf` files in this directory are pre-rendered signed-distance-field glyph
+atlases generated from Open Sans Semibold. They are vendored by
+`scripts/vendor-glyphs.mjs` so that map labels do not depend on
+`demotiles.maplibre.org` — MapLibre's demo tile server, which is explicitly not
+intended for production traffic — at runtime.
+
+Regenerate with:
+
+    node scripts/vendor-glyphs.mjs

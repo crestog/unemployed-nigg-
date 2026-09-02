@@ -5,14 +5,19 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import RoleComparisonOverlay from "./components/RoleComparisonOverlay";
 
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const Home = lazy(() => import("./pages/RealHome"));
 const Roadmaps = lazy(() => import("./pages/Roadmaps"));
 const RoadmapDetail = lazy(() => import("./pages/RoadmapDetail"));
+const RoadmapPlan = lazy(() => import("./pages/RoadmapPlan"));
 const AiRoadmapGenerator = lazy(() => import("./pages/AiRoadmapGenerator"));
 const AiRoadmapResult = lazy(() => import("./pages/AiRoadmapResult"));
+// Mounted on every route but only visible once a comparison is started, so it
+// was pure weight on first paint. Lazy here means it downloads when opened.
+const RoleComparisonOverlay = lazy(
+  () => import("./components/RoleComparisonOverlay")
+);
 
 function Router() {
   return (
@@ -26,14 +31,19 @@ function Router() {
       }
     >
       <Switch>
-      <Route path={"/ai/roadmap/result"} component={AiRoadmapResult} />
-      <Route path={"/ai/roadmap"} component={AiRoadmapGenerator} />
-      <Route path={"/roadmaps/plan"} component={AiRoadmapGenerator} />
-      <Route path={"/roadmaps/:slug"} component={RoadmapDetail} />
-      <Route path={"/roadmaps"} component={Roadmaps} />
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
+        <Route path={"/ai/roadmap/result"} component={AiRoadmapResult} />
+        <Route path={"/ai/roadmap"} component={AiRoadmapGenerator} />
+        {/* `/roadmaps/plan` used to render AiRoadmapGenerator, which generates a
+            brand-new roadmap graph from a topic — a different feature from the
+            goal-driven study planner in RoadmapPlan, which was complete but had
+            no route at all. Both are now reachable, each at its own path. This
+            route must precede `/roadmaps/:slug` or the slug pattern swallows it. */}
+        <Route path={"/roadmaps/plan"} component={RoadmapPlan} />
+        <Route path={"/roadmaps/:slug"} component={RoadmapDetail} />
+        <Route path={"/roadmaps"} component={Roadmaps} />
+        <Route path={"/"} component={Home} />
+        <Route path={"/404"} component={NotFound} />
+        {/* Final fallback route */}
         <Route component={NotFound} />
       </Switch>
     </Suspense>
@@ -55,7 +65,11 @@ function App() {
         <TooltipProvider>
           <Toaster />
           <Router />
-          <RoleComparisonOverlay />
+          {/* Its own boundary: the overlay must not hold up the page it floats
+              over, and its trigger appearing a beat late is invisible. */}
+          <Suspense fallback={null}>
+            <RoleComparisonOverlay />
+          </Suspense>
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

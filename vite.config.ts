@@ -203,10 +203,26 @@ function vitePluginStorageProxy(): Plugin {
   };
 }
 
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector(), vitePluginStorageProxy()];
+// Dev-only plugins. `jsxLocPlugin` and `vitePluginManusRuntime` used to be in
+// the unconditional list, so `vite build` inlined ~335 KB of editor/overlay
+// JavaScript — including a second copy of React and a `window` message listener
+// that never checks `event.origin` — into the production index.html. Gating on
+// `command` rather than NODE_ENV is deliberate: NODE_ENV is not reliably set
+// when the config module is evaluated, whereas `command` is always "build" or
+// "serve".
+const devOnlyPlugins = () => [
+  jsxLocPlugin(),
+  vitePluginManusRuntime(),
+  vitePluginManusDebugCollector(),
+  vitePluginStorageProxy(),
+];
 
-export default defineConfig({
-  plugins,
+export default defineConfig(({ command }) => ({
+  plugins: [
+    react(),
+    tailwindcss(),
+    ...(command === "serve" ? devOnlyPlugins() : []),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
@@ -238,4 +254,4 @@ export default defineConfig({
       deny: ["**/.*"],
     },
   },
-});
+}));

@@ -1,26 +1,94 @@
 <!doctype html>
 <html lang="en">
-
   <head>
     <meta charset="UTF-8" />
+    <!-- No `maximum-scale`: pinning it blocked pinch-zoom, which fails WCAG 2.1
+         SC 1.4.4 (Resize Text) and is exactly the gesture a map needs. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Industry Niche Atlas — At every scale.</title>
     <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <title>Industry Niche Atlas — At every scale.</title>    
-    <meta name="description" content="A research-backed atlas for exploring industries, occupations, tasks, and narrow work niches." />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <!--
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    -->
-  </head>
+      name="description"
+      content="A research-backed atlas for exploring industries, occupations, tasks, and narrow work niches."
+    />
+    <meta name="theme-color" content="#fbfaf5" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 
+    <!-- No `canonical` and no `og:url`. There is one static index.html behind
+         every route, so any fixed canonical here would declare `/roadmaps`,
+         `/roadmaps/plan` and the rest to be duplicates of `/` and invite
+         crawlers to drop them. Nothing on this origin is reachable at two URLs,
+         so there is no duplication for a canonical to resolve. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Industry Niche Atlas" />
+    <meta
+      property="og:title"
+      content="Industry Niche Atlas — At every scale."
+    />
+    <meta
+      property="og:description"
+      content="A research-backed atlas for exploring industries, occupations, tasks, and narrow work niches."
+    />
+    <!-- No `og:image`: there is no raster social card in the repo, and pointing at
+         one that does not exist unfurls worse than declaring none. -->
+    <meta name="twitter:card" content="summary" />
+    <meta
+      name="twitter:title"
+      content="Industry Niche Atlas — At every scale."
+    />
+    <meta
+      name="twitter:description"
+      content="A research-backed atlas for exploring industries, occupations, tasks, and narrow work niches."
+    />
+
+    <!-- Loaded as `print`, then switched to `all` on load, so the stylesheet is
+         fetched at normal priority without holding up first paint. Text renders
+         in the fallback stack for a moment; a render-blocking third-party
+         request is the worse trade. The commented-out duplicate Inter block that
+         used to sit here was dead weight and is gone. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
+  </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <div
+        style="
+          margin: 0 auto;
+          max-width: 42rem;
+          padding: 3rem 1.5rem;
+          font-family: Georgia, &quot;Times New Roman&quot;, serif;
+          color: #242822;
+          line-height: 1.6;
+        "
+      >
+        <h1 style="font-size: 1.75rem; margin: 0 0 1rem">
+          Industry Niche Atlas
+        </h1>
+        <p style="margin: 0 0 1rem">
+          The atlas renders industry, occupation and geography data
+          interactively, so it needs JavaScript to run. Enable it for this site
+          and reload to explore the taxonomies, the occupation directory, the
+          skill roadmaps and the world map.
+        </p>
+        <p style="margin: 0; color: #666960">
+          Everything here is built from public sources — O*NET, GeoNames and
+          geoBoundaries — and the provenance for each layer is shown alongside
+          it in the app.
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
-
 </html>

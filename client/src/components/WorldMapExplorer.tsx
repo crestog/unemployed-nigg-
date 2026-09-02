@@ -402,14 +402,23 @@ export default function WorldMapExplorer() {
   }, []);
 
   useEffect(() => {
-    let active = true;
-    fetch("/data/world-mvt/manifest.json?v=20260824-global-deep", { cache: "no-store" })
+    // `{ cache: "no-store" }` used to be set here, which forced a full download
+    // of what was then an 8.27 MB manifest on every single load and defeated the
+    // Worker's own `max-age`. The `?v=` release stamp already busts the cache
+    // when the data changes, so the browser cache is allowed to do its job.
+    const controller = new AbortController();
+    fetch("/data/world-mvt/manifest.json?v=20260824-global-deep", {
+      signal: controller.signal,
+    })
       .then(response => response.ok ? response.json() as Promise<GlobalMvtManifest> : null)
       .then(manifest => {
-        if (active && manifest?.format === "atlas-global-geoboundaries-mvt-v1") setGlobalMvtManifest(manifest);
+        if (manifest?.format === "atlas-global-geoboundaries-mvt-v1") setGlobalMvtManifest(manifest);
       })
-      .catch(() => undefined);
-    return () => { active = false; };
+      .catch((thrown: unknown) => {
+        if (thrown instanceof DOMException && thrown.name === "AbortError") return;
+        console.error("atlas: could not load the world tile manifest", thrown);
+      });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {

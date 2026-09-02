@@ -1,5 +1,15 @@
 name: Refresh real data release
 
+# A pushed commit authored by GITHUB_TOKEN does not trigger workflows — by
+# design, so automation cannot loop. This job therefore used to leave refreshed
+# data sitting on `main` with no deploy behind it: the release in git and the
+# release being served drifted apart every month, silently.
+#
+# So it opens a pull request instead of pushing to `main`. That fixes the deploy
+# loop the right way round — when a human merges, the merge is authored by them
+# and `deploy-cloudflare.yml` runs — and it puts a review in front of a data diff
+# that grows the repository every time it lands.
+
 on:
   workflow_dispatch:
   schedule:
@@ -7,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   refresh:
@@ -36,10 +47,55 @@ jobs:
           assert manifest["counts"]["taskStatementCount"] > 10000
           print("validated", manifest["releaseId"])
           PY
+
       - name: Commit updated release files
+        id: commit
         run: |
+          set -euo pipefail
           git config user.name "atlas-data-refresh"
           git config user.email "actions@users.noreply.github.com"
           git add client/public/data
-          git diff --cached --quiet || git commit -m "chore: refresh official data release"
-          git push
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Source release is unchanged since the last refresh; nothing to propose."
+            exit 0
+          fi
+          branch="data/refresh-$(date -u +%Y-%m-%d)"
+          git checkout -b "$branch"
+          git commit -m "chore: refresh official data release"
+          # Force, so re-running on the same day updates the open pull request
+          # rather than failing on a branch that already exists.
+          git push --force origin "$branch"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the pull request
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.commit.outputs.branch }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]]; then
+            echo "Pull request for $BRANCH already open; the force-push updated it."
+            exit 0
+          fi
+          gh pr create \
+            --head "$BRANCH" \
+            --base main \
+            --title "chore: refresh official data release" \
+            --body "$(cat <<'BODY'
+          Automated monthly rebuild of the O*NET-derived release by
+          `scripts/download_real_data.py` + `scripts/build_real_data.py`, validated
+          against `client/public/data/manifest.json` (real-source mode, zero
+          synthetic records, >900 occupations, >10,000 task statements).
+
+          Worth a look before merging:
+
+          - the `releaseId` and record counts in the manifest diff, and
+          - how much the tracked data grew, since this lands in git permanently.
+
+          Merging deploys: `deploy-cloudflare.yml` runs on push to `main`, which an
+          automated push cannot trigger — that is why this is a pull request.
+          BODY
+          )"

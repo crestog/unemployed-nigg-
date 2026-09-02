@@ -1,19 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Maximize2, Minus, Plus, RotateCcw, Search } from "lucide-react";
 import type { RoadmapTopic } from "@/data/roadmapCatalog";
+import {
+  fetchRoadmapGraph,
+  isAbort,
+  type RoadmapGraphDocument,
+  type RoadmapGraphNode,
+} from "@/lib/roadmapData";
 
-type GraphNode = {
-  id: string;
-  type?: string;
-  position?: { x: number; y: number };
-  positionAbsolute?: { x: number; y: number };
-  width?: number;
-  height?: number;
-  data?: { label?: string; style?: Record<string, string | number>; legend?: { label?: string; color?: string } };
-};
-type GraphEdge = { id?: string; source?: string; target?: string; type?: string; style?: Record<string, string | number> };
-type GraphDocument = { nodes: GraphNode[]; edges: GraphEdge[]; dimensions?: { width: number; height: number } };
-type GraphPayload = { roadmaps: Record<string, GraphDocument> };
+type GraphNode = RoadmapGraphNode;
+type GraphDocument = RoadmapGraphDocument;
 type TopicWithMarkdown = RoadmapTopic & { id: string; roadmapSlug: string; markdown?: string };
 
 type Props = {
@@ -51,7 +47,7 @@ function legendKey(node: GraphNode) {
 }
 
 export default function RoadmapGraph({ slug, topics, progress, onTopicSelect }: Props) {
-  const [payload, setPayload] = useState<GraphPayload | null>(null);
+  const [graph, setGraph] = useState<GraphDocument | null>(null);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [legendFilter, setLegendFilter] = useState<"all" | "recommended" | "alternative" | "flexible">("all");
@@ -60,13 +56,20 @@ export default function RoadmapGraph({ slug, topics, progress, onTopicSelect }: 
   const dragStart = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
 
   useEffect(() => {
-    fetch("/data/roadmap-graphs.json")
-      .then((response) => response.json() as Promise<GraphPayload>)
-      .then(setPayload)
-      .catch(() => setPayload(null));
-  }, []);
+    // Was a fetch of the whole 5.7 MB roadmap-graphs.json — every one of the 92
+    // roadmap graphs — to render one of them, with no cancellation.
+    const controller = new AbortController();
+    fetchRoadmapGraph(slug, controller.signal)
+      .then(setGraph)
+      .catch((thrown: unknown) => {
+        if (isAbort(thrown)) return;
+        console.error(`atlas: could not load the graph for ${slug}`, thrown);
+        setGraph(null);
+      });
+    return () => controller.abort();
+  }, [slug]);
 
-  const graph = payload?.roadmaps?.[slug];
+
   const topicById = useMemo(() => new Map(topics.map((topic) => [topic.id.split("@").pop() || topic.id, topic])), [topics]);
   const bounds = useMemo(() => {
     const visibleNodes = graph?.nodes.filter((node) => node.data?.label && node.type !== "vertical" && node.type !== "horizontal") || [];

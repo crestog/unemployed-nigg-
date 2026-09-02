@@ -4,13 +4,25 @@ export type GlobalMvtLayer = {
   invalidOrEmptyFeatures: number;
   tileCount: number;
   tileBytes: number;
-  tiles: string[];
+  /**
+   * Absent from the manifest the client downloads. It was an exhaustive
+   * `"z/x/y.pbf"` enumeration — 459,493 keys, 8.27 MB of the 8.27 MB file — that
+   * nothing read: MapLibre asks for tiles by URL template and treats a missing
+   * one as empty. `scripts/build-world-manifest.mjs` strips it; the full listing
+   * stays in the release-scoped manifest as the provenance record.
+   */
+  tiles?: string[];
   layerDirectory?: string;
   mvtSourceLayer?: string;
   labelOnly?: boolean;
   sourceFile: string;
   sourceSha256: string;
   sourceUrl: string;
+  /**
+   * One row per country, and stripped by the same script except on
+   * `placesLabels`, where the first row is the GeoNames attribution shown on a
+   * locality selection. Treat any other layer's as absent.
+   */
   sourceMetadata?: Array<{
     countryCode?: string;
     countryName?: string;

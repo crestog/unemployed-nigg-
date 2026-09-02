@@ -1,8 +1,18 @@
+/**
+ * `progress` and `notes` are keyed by roadmap slug first, then topic id.
+ *
+ * They used to be flat `Record<topicId, …>`, matching a server snapshot that
+ * flattened the same way. Topic ids are not unique across roadmaps — `html`,
+ * `git`, `sql` and `docker` appear in most of the catalog — so completing a
+ * shared topic in one roadmap showed it as complete in every other roadmap that
+ * used the same id, and the underlying D1 rows overwrote each other as well
+ * (fixed in migrations/0003_scope_state_by_roadmap.sql).
+ */
 export type AtlasSnapshot = {
   profile: string;
   favorites: string[];
-  progress: Record<string, boolean>;
-  notes: Record<string, string>;
+  progress: Record<string, Record<string, boolean>>;
+  notes: Record<string, Record<string, string>>;
   plans: Array<Record<string, unknown>>;
 };
 
@@ -191,6 +201,25 @@ export async function loadAtlasSnapshot() {
   }
 }
 
+/**
+ * Per-roadmap views of a snapshot. Callers work with one roadmap at a time, so
+ * the slug lookup lives here rather than being repeated (and getting the
+ * `noUncheckedIndexedAccess` fallback wrong) at each call site.
+ */
+export function progressForRoadmap(
+  snapshot: AtlasSnapshot | null,
+  slug: string
+): Record<string, boolean> {
+  return snapshot?.progress?.[slug] ?? {};
+}
+
+export function notesForRoadmap(
+  snapshot: AtlasSnapshot | null,
+  slug: string
+): Record<string, string> {
+  return snapshot?.notes?.[slug] ?? {};
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T | null> {
   let response: Response;
   try {
@@ -254,118 +283,12 @@ export function askAtlasTutor(input: AiChatInput) {
   return postJson<AiChatResponse>("/api/ai/chat", input);
 }
 
-export function getPendingAtlasStateCount() {
-  return readOutbox().length;
-}
-
-export function getAtlasStateDiagnostics() {
-  return {
-    version: "outbox-v1",
-    pending: readOutbox().length,
-    online: typeof navigator === "undefined" ? true : navigator.onLine,
-    identity: "server-issued HttpOnly cookie",
-    crossDeviceSync: false,
-    maxPendingActions: MAX_OUTBOX_ITEMS,
-    transport: "/api/state",
-  } as const;
-}
-
-export function getAtlasStateLimit() {
-  return MAX_OUTBOX_ITEMS;
-}
-
-export function getAtlasStateStorageKey() {
-  return OUTBOX_KEY;
-}
-
-export function getAtlasStatePrivacyNote() {
-  return "The server-issued profile cookie is an unauthenticated state bucket, not proof of identity; do not store secrets in notes.";
-}
-
-export function getAtlasStateNextCheckpoint() {
-  return "Select authenticated identity before enabling cross-device merge.";
-}
-
-export function getAtlasStateManualRequirement() {
-  return "No API key, Cloudflare resource, or phone action is required for this release.";
-}
-
-export function getAtlasStateTestPlan() {
-  return [
-    "offline mutation",
-    "reload",
-    "reconnect",
-    "FIFO replay",
-    "stable plan replay",
-  ] as const;
-}
-
-export function getAtlasStateSourceOfTruth() {
-  return "D1 is the server snapshot when reachable; the local outbox holds pending writes.";
-}
-
-export function getAtlasStateImplementationBoundary() {
-  return "Local-first retry is implemented; authenticated cross-device identity remains intentionally disabled.";
-}
-
-export function getAtlasStateConflictPolicy() {
-  return "Favorite, progress, and note mutations remain idempotent row upserts; plan replay uses a stable client action ID.";
-}
-
-export function getAtlasStateReadyForCrossDevice() {
-  return false;
-}
-
-export function getAtlasStateRelease() {
-  return "atlas-state-outbox-v1";
-}
-
-export function getAtlasStateLastUpdated() {
-  return "2026-08-23";
-}
-
-export function getAtlasStateCapabilities() {
-  return [
-    "local-first",
-    "bounded-outbox",
-    "FIFO-retry",
-    "stable-action-id",
-    "D1-sync",
-  ] as const;
-}
-
-export function getAtlasStateFailureMode() {
-  return "If D1 or the network is unavailable, pending edits remain local up to the bounded queue limit and retry on reconnect or the next snapshot read.";
-}
-
-export function getAtlasStateEndToEndStatus() {
-  return "implemented" as const;
-}
-
-export function getAtlasStateCrossDeviceNote() {
-  return "Cross-device continuity requires authenticated identity and is not claimed by this cookie-scoped profile implementation.";
-}
-
-export function getAtlasStateDocumentation() {
-  return "Atlas edits are optimistic, queued locally, replayed FIFO, and persisted to D1 when available.";
-}
-
-export function getAtlasStateSecurityBoundary() {
-  return "A profile ID identifies a browser state bucket; it is not an authorization credential. It is issued by the server and held in an HttpOnly cookie, so it is not readable by page scripts and cannot be supplied by the caller.";
-}
-
-export function getAtlasStateAcceptanceCriteria() {
-  return [
-    "writes survive offline reload",
-    "reconnect drains FIFO",
-    "failed requests remain queued",
-  ] as const;
-}
-
-export function getAtlasStateNextStep() {
-  return "Add authenticated identity and server-side merge rules before promising account portability.";
-}
-
-export function getAtlasStateFinalNote() {
-  return "This is a reversible persistence improvement, not an authentication implementation.";
-}
+// Twenty-four exports used to live below this point, all of them unreferenced:
+// `getAtlasStateSecurityBoundary()`, `getAtlasStateConflictPolicy()`,
+// `getAtlasStateTestPlan()` and the like returned English sentences describing
+// the module. That is documentation shaped like code — it cannot go stale
+// visibly, cannot be checked, and shipped in the bundle. The sentences worth
+// keeping are now comments on the code they describe: identity is a
+// server-issued HttpOnly cookie and an unauthenticated state bucket rather than
+// an authorization credential (see `postStateAction`), and the outbox is a
+// bounded FIFO that replays on reconnect (see `flushAtlasStateOutbox`).

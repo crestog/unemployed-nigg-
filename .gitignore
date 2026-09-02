@@ -7,6 +7,25 @@ dist/
 build/
 *.dist
 
+# Derived client data. `pnpm data:derive` regenerates both, and `dev` and `build`
+# run it, so committing them would duplicate ~32 MB of already-committed source.
+#
+#   client/public/data/roadmaps/**       from roadmap-content.json + roadmap-graphs.json
+#   client/public/data/occupations-index.json
+#   client/public/data/occupations-detail.json
+#                                        from occupations.json, split so landing
+#                                        does not pull the 6.6 MB whole
+#   client/public/data/world-mvt/manifest.json
+#                                        from <release>/manifest.json, minus the
+#                                        exhaustive tile listing nothing reads
+#
+# The monoliths and the release-scoped manifest stay committed: they are the
+# provenance record, and the generators are pure functions of them.
+client/public/data/roadmaps/
+client/public/data/occupations-index.json
+client/public/data/occupations-detail.json
+client/public/data/world-mvt/manifest.json
+
 # Environment variables
 .env
 .env.local

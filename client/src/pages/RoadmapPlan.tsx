@@ -12,6 +12,7 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { roadmapCatalog } from "@/data/roadmapCatalog";
+import { fetchRoadmapTopics, isAbort } from "@/lib/roadmapData";
 import {
   AtlasAiError,
   generateAiPlan,
@@ -83,11 +84,23 @@ export default function RoadmapPlan() {
   );
 
   useEffect(() => {
-    fetch("/data/roadmap-content.json")
-      .then(response => response.json() as Promise<Topic[]>)
+    // Was a fetch of the whole 19.9 MB roadmap-content.json on mount, filtered
+    // to the matched roadmap at generate time. Only the matched roadmap's topics
+    // are ever sent to the planner, and the match changes as the goal text
+    // changes, so this now follows the selection and cancels the previous load.
+    const controller = new AbortController();
+    fetchRoadmapTopics(selectedRoadmap.slug, controller.signal)
       .then(setTopicData)
-      .catch(() => setTopicData([]));
-  }, []);
+      .catch((thrown: unknown) => {
+        if (isAbort(thrown)) return;
+        console.error(
+          `atlas: could not load topics for ${selectedRoadmap.slug}`,
+          thrown
+        );
+        setTopicData([]);
+      });
+    return () => controller.abort();
+  }, [selectedRoadmap.slug]);
 
   async function generate() {
     if (!goal.trim() || loading) return;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link, useRoute } from "wouter";
 import {
   ArrowLeft,
@@ -13,20 +13,41 @@ import {
   MessageCircle,
   X,
 } from "lucide-react";
-import { Streamdown } from "streamdown";
-import { roadmapCatalog, type RoadmapTopic } from "@/data/roadmapCatalog";
+import { roadmapCatalog } from "@/data/roadmapCatalog";
 import RoadmapGraph from "@/components/RoadmapGraph";
-import AtlasTutorChat from "@/components/AtlasTutorChat";
-import { loadAtlasSnapshot, syncAtlasAction } from "@/lib/atlasState";
-const PROGRESS_KEY = "atlas-roadmap-progress";
+// Both of these were static imports, which put 273 KB gzipped — streamdown and
+// the syntax-highlighting and diagram stack behind it — on the roadmap page
+// before the reader had opened a topic or the tutor. Neither renders until an
+// interaction, so neither needs to be in the page's own chunk.
+const AtlasTutorChat = lazy(() => import("@/components/AtlasTutorChat"));
+const Streamdown = lazy(() =>
+  import("streamdown").then(module => ({ default: module.Streamdown }))
+);
+import {
+  fetchRoadmapTopics,
+  isAbort,
+  type RoadmapTopicRecord,
+} from "@/lib/roadmapData";
+import {
+  loadAtlasSnapshot,
+  notesForRoadmap,
+  progressForRoadmap,
+  syncAtlasAction,
+} from "@/lib/atlasState";
+// Progress and notes are stored per roadmap. They used to share one unscoped
+// key each, keyed on topic id alone, so marking `html` complete in the frontend
+// roadmap also marked it complete in backend, devops and every other roadmap
+// that reuses the id. The legacy unscoped keys are deliberately not migrated:
+// they cannot be attributed back to a roadmap, and inventing an attribution
+// would mark topics complete in roadmaps the user never opened. Every one of
+// those writes also went to D1, which is now correctly scoped, so the server
+// snapshot below is the recovery path.
+const progressKey = (slug: string) => `atlas-roadmap-progress:${slug}`;
+const notesKey = (slug: string) => `atlas-roadmap-notes:${slug}`;
+// Favorites are a list of roadmap slugs, so they were never affected.
 const FAVORITES_KEY = "atlas-roadmap-favorites";
-const NOTES_KEY = "atlas-roadmap-notes";
-type TopicRecord = RoadmapTopic & {
-  roadmapSlug: string;
-  markdown: string;
-  links: { label: string; url: string }[];
-  sourceUrl: string;
-};
+// Shared with the loader so the shape is declared once.
+type TopicRecord = RoadmapTopicRecord;
 function readJson<T>(key: string, fallback: T): T {
   try {
     return JSON.parse(localStorage.getItem(key) || "") as T;
@@ -44,37 +65,84 @@ function titleCase(value: string) {
 
 export default function RoadmapDetail() {
   const [, params] = useRoute<{ slug: string }>("/roadmaps/:slug");
-  const slug = params?.slug || "frontend";
-  const roadmap =
-    roadmapCatalog.find(item => item.slug === slug) || roadmapCatalog[0];
-  const [topicData, setTopicData] = useState<TopicRecord[]>([]);
-  const [contentLoading, setContentLoading] = useState(true);
-  const roadmapTopics = useMemo(
-    () => topicData.filter(topic => topic.roadmapSlug === roadmap.slug),
-    [topicData, roadmap.slug]
+  const slug = params?.slug ?? "";
+  const roadmap = roadmapCatalog.find(item => item.slug === slug);
+  // An unknown slug used to fall back to `roadmapCatalog[0]`, silently rendering
+  // the frontend roadmap as though it were the one asked for. That is what hid
+  // the dead /roadmaps/quiz and /roadmaps/chat nav links: they matched this
+  // route, so they rendered a real page instead of a 404.
+  if (!roadmap) return <RoadmapNotFound slug={slug} />;
+  // Remounting on slug change keeps the per-roadmap state initialisers below
+  // authoritative; wouter otherwise reuses this component across the navigation
+  // and the previous roadmap's progress and notes would stay on screen.
+  return <RoadmapDetailView key={roadmap.slug} roadmap={roadmap} />;
+}
+
+function RoadmapNotFound({ slug }: { slug: string }) {
+  return (
+    <div className="grid min-h-screen place-items-center bg-[#0b1220] px-4 text-[#f6f4ff]">
+      <div className="max-w-md text-center">
+        <p className="text-[11px] font-extrabold uppercase tracking-[.28em] text-[#d8b4fe]">
+          404
+        </p>
+        <h1 className="atlas-serif mt-4 text-4xl font-semibold leading-[.95] tracking-[-.05em] text-white">
+          No roadmap called {slug ? `“${slug}”` : "that"}
+        </h1>
+        <p className="mt-4 text-sm text-[#b9c3da]">
+          It may have been renamed, or the link may be wrong.
+        </p>
+        <Link
+          href="/roadmaps"
+          className="mt-8 inline-flex items-center gap-2 rounded-lg bg-[#f5f3ff] px-4 py-3 text-sm font-bold text-[#211238] hover:bg-[#d8b4fe]"
+        >
+          <ArrowLeft className="h-4 w-4" /> Browse all roadmaps
+        </Link>
+      </div>
+    </div>
   );
+}
+
+function RoadmapDetailView({
+  roadmap,
+}: {
+  roadmap: (typeof roadmapCatalog)[number];
+}) {
+  const slug = roadmap.slug;
+  const [roadmapTopics, setRoadmapTopics] = useState<TopicRecord[]>([]);
+  const [contentLoading, setContentLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<TopicRecord | null>(null);
   const [progress, setProgress] = useState<Record<string, boolean>>(() =>
-    readJson(PROGRESS_KEY, {})
+    readJson(progressKey(slug), {})
   );
   const [favorites, setFavorites] = useState<string[]>(() =>
     readJson(FAVORITES_KEY, [])
   );
   const [notes, setNotes] = useState<Record<string, string>>(() =>
-    readJson(NOTES_KEY, {})
+    readJson(notesKey(slug), {})
   );
   const [filter, setFilter] = useState<"all" | "open" | "done">("all");
   const [view, setView] = useState<"map" | "topics">("map");
   const [showTutor, setShowTutor] = useState(false);
 
   useEffect(() => {
-    fetch("/data/roadmap-content.json")
-      .then(response => response.json() as Promise<TopicRecord[]>)
-      .then(setTopicData)
-      .catch(() => setTopicData([]))
-      .finally(() => setContentLoading(false));
-  }, []);
+    // Was a fetch of the whole 19.9 MB roadmap-content.json followed by a
+    // client-side filter down to this roadmap's ~110 topics, with nothing
+    // cancelling it on navigation.
+    const controller = new AbortController();
+    fetchRoadmapTopics(slug, controller.signal)
+      .then(records => {
+        setRoadmapTopics(records);
+        setContentLoading(false);
+      })
+      .catch((thrown: unknown) => {
+        if (isAbort(thrown)) return;
+        console.error(`atlas: could not load topics for ${slug}`, thrown);
+        setRoadmapTopics([]);
+        setContentLoading(false);
+      });
+    return () => controller.abort();
+  }, [slug]);
 
   const filtered = useMemo(
     () =>
@@ -97,26 +165,26 @@ export default function RoadmapDetail() {
     : 0;
 
   useEffect(() => {
-    setSelected(null);
-    setQuery("");
-    setFilter("all");
-  }, [roadmap.slug]);
-
-  useEffect(() => {
     void loadAtlasSnapshot().then(snapshot => {
       if (!snapshot) return;
       setFavorites(current =>
         Array.from(new Set([...current, ...snapshot.favorites]))
       );
-      setProgress(current => ({ ...current, ...snapshot.progress }));
-      setNotes(current => ({ ...current, ...snapshot.notes }));
+      setProgress(current => ({
+        ...current,
+        ...progressForRoadmap(snapshot, slug),
+      }));
+      setNotes(current => ({
+        ...current,
+        ...notesForRoadmap(snapshot, slug),
+      }));
     });
-  }, []);
+  }, [slug]);
 
   function saveNote(topicId: string, note: string) {
     const next = { ...notes, [topicId]: note };
     setNotes(next);
-    localStorage.setItem(NOTES_KEY, JSON.stringify(next));
+    localStorage.setItem(notesKey(roadmap.slug), JSON.stringify(next));
     void syncAtlasAction({
       action: "note",
       roadmapSlug: roadmap.slug,
@@ -128,7 +196,7 @@ export default function RoadmapDetail() {
   function toggleProgress(id: string, forced?: boolean) {
     const next = { ...progress, [id]: forced ?? !progress[id] };
     setProgress(next);
-    localStorage.setItem(PROGRESS_KEY, JSON.stringify(next));
+    localStorage.setItem(progressKey(roadmap.slug), JSON.stringify(next));
     void syncAtlasAction({
       action: "progress",
       roadmapSlug: roadmap.slug,
@@ -282,7 +350,9 @@ export default function RoadmapDetail() {
               topics={roadmapTopics}
               progress={progress}
               onTopicSelect={topic => {
-                const fullTopic = topicData.find(item => item.id === topic.id);
+                const fullTopic = roadmapTopics.find(
+                  item => item.id === topic.id
+                );
                 if (fullTopic) setSelected(fullTopic);
               }}
             />
@@ -433,19 +503,27 @@ export default function RoadmapDetail() {
       </main>
 
       {showTutor && (
-        <AtlasTutorChat
-          roadmap={{
-            slug: roadmap.slug,
-            title: roadmap.title,
-            description: roadmap.description,
-          }}
-          topics={roadmapTopics}
-          progress={progress}
-          notes={notes}
-          onToggleProgress={toggleProgress}
-          onSaveNote={saveNote}
-          onClose={() => setShowTutor(false)}
-        />
+        <Suspense
+          fallback={
+            <div className="fixed inset-x-0 bottom-0 z-50 border-t border-white/10 bg-[#0f182a] p-4 text-center text-sm text-[#8492ad]">
+              Opening the tutor…
+            </div>
+          }
+        >
+          <AtlasTutorChat
+            roadmap={{
+              slug: roadmap.slug,
+              title: roadmap.title,
+              description: roadmap.description,
+            }}
+            topics={roadmapTopics}
+            progress={progress}
+            notes={notes}
+            onToggleProgress={toggleProgress}
+            onSaveNote={saveNote}
+            onClose={() => setShowTutor(false)}
+          />
+        </Suspense>
       )}
       {selected && (
         <div
@@ -499,7 +577,15 @@ export default function RoadmapDetail() {
               </a>
             </div>
             <article className="prose prose-invert mt-8 max-w-none prose-headings:font-semibold prose-headings:tracking-tight prose-p:text-[#b3bed2] prose-p:leading-7 prose-li:text-[#b3bed2] prose-a:text-[#c4b5fd] prose-strong:text-white">
-              <Streamdown>{selected.markdown}</Streamdown>
+              <Suspense
+                fallback={
+                  <p className="animate-pulse text-sm text-[#8492ad]">
+                    Rendering topic…
+                  </p>
+                }
+              >
+                <Streamdown>{selected.markdown}</Streamdown>
+              </Suspense>
             </article>
             <section className="mt-8 border-t border-white/10 pt-6">
               <p className="text-[10px] font-extrabold uppercase tracking-[.18em] text-[#8492ad]">

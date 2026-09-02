@@ -295,6 +295,10 @@ export function resolveIdentity(request: Request): Identity {
 
 export function withIdentityCookie(response: Response, identity: Identity) {
   if (!identity.issued) return response;
+  // `DELETE /api/state` expires the cookie itself. Minting a replacement in the
+  // same response would hand the caller a new profile they did not ask for.
+  if (response.headers.get("set-cookie")?.includes(`${PROFILE_COOKIE}=`))
+    return response;
   const headers = new Headers(response.headers);
   headers.append(
     "set-cookie",
@@ -858,6 +862,30 @@ async function ensureProfile(db: D1Database, id: string) {
     .run();
 }
 
+/**
+ * Groups rows by roadmap slug.
+ *
+ * `progress` and `notes` used to be flattened onto `topic_id` alone, which threw
+ * away the roadmap the row belonged to. Combined with the 0001 primary key that
+ * did the same thing, a topic id shared between two roadmaps (`html`, `git`,
+ * `sql` — most of the catalog shares these) meant one roadmap's state showed up
+ * on another. Rows arrive `ORDER BY updated_at DESC`, so within a slug the first
+ * write wins and that is the newest one.
+ */
+export function groupBySlug<Row extends { roadmap_slug: string; topic_id: string }, Value>(
+  rows: Row[],
+  value: (row: Row) => Value
+) {
+  const grouped: Record<string, Record<string, Value>> = {};
+  for (const row of rows) {
+    if (!row.roadmap_slug || !row.topic_id) continue;
+    const bucket = (grouped[row.roadmap_slug] ??= {});
+    if (row.topic_id in bucket) continue;
+    bucket[row.topic_id] = value(row);
+  }
+  return grouped;
+}
+
 async function snapshot(db: D1Database, id: string) {
   const [favorites, progress, notes, plans] = await Promise.all([
     db
@@ -907,38 +935,61 @@ async function snapshot(db: D1Database, id: string) {
   return {
     profile: id,
     favorites: (favorites.results || []).map(item => item.roadmap_slug),
-    progress: (progress.results || []).reduce<Record<string, boolean>>(
-      (map, item) => {
-        map[item.topic_id] = Boolean(item.completed);
-        return map;
-      },
-      {}
+    progress: groupBySlug(progress.results || [], item =>
+      Boolean(item.completed)
     ),
-    notes: (notes.results || []).reduce<Record<string, string>>((map, item) => {
-      map[item.topic_id] = item.note;
-      return map;
-    }, {}),
-    plans: (plans.results || []).map(item => ({
-      ...item,
-      topicIds: JSON.parse(item.topic_ids_json),
-    })),
+    notes: groupBySlug(notes.results || [], item => item.note),
+    plans: (plans.results || []).map(item => {
+      const { topic_ids_json, ...rest } = item;
+      return { ...rest, topicIds: parseTopicIds(topic_ids_json, item.id) };
+    }),
   };
 }
 
+/**
+ * A single malformed `topic_ids_json` row used to throw inside `snapshot()` and
+ * therefore break every read for that profile permanently — favourites,
+ * progress and notes included. The bad row is now skipped instead.
+ */
+export function parseTopicIds(raw: string, planId: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is string => typeof value === "string");
+  } catch (error) {
+    console.error(`atlas: unparseable topic_ids_json on plan ${planId}`, error);
+    return [];
+  }
+}
+
+/**
+ * Cache-Control for static assets.
+ *
+ * This used to enumerate four specific paths, which meant the largest files in
+ * the tree — `roadmap-content.json`, `occupations.json`, the roadmap graph —
+ * shipped with no cache directive at all and were re-fetched on every visit. The
+ * general rule now: anything under a release-scoped or hashed directory is
+ * immutable, a bare manifest revalidates, and everything else under /data gets a
+ * day with a week of stale-while-revalidate.
+ */
 function withAssetCacheHeaders(response: Response, pathname: string) {
   if (!response.ok) return response;
+  if (!pathname.startsWith("/data/")) return response;
   const headers = new Headers(response.headers);
-  if (pathname === "/data/india-tiles/manifest.json") {
-    headers.set("cache-control", "public, max-age=60, must-revalidate");
-  } else if (new RegExp("^/data/india-tiles/[^/]+/").test(pathname)) {
-    headers.set("cache-control", "public, max-age=31536000, immutable");
-  } else if (pathname === "/data/world-venture.json") {
+  const immutable = "public, max-age=31536000, immutable";
+  if (/^\/data\/[^/]+\/manifest\.json$/.test(pathname)) {
+    // Manifests name the current release, so they are the one thing that must
+    // stay fresh; everything they point at is content-addressed by release id.
+    headers.set("cache-control", "public, max-age=300, must-revalidate");
+  } else if (/^\/data\/(india-tiles|world-mvt)\/[^/]+\//.test(pathname)) {
+    headers.set("cache-control", immutable);
+  } else if (pathname.endsWith("/manifest.json")) {
+    headers.set("cache-control", "public, max-age=300, must-revalidate");
+  } else {
     headers.set(
       "cache-control",
-      "public, max-age=3600, stale-while-revalidate=86400"
+      "public, max-age=86400, stale-while-revalidate=604800"
     );
-  } else if (pathname === "/data/world-mvt/manifest.json") {
-    headers.set("cache-control", "public, max-age=60, must-revalidate");
   }
   return new Response(response.body, {
     status: response.status,
@@ -1028,13 +1079,20 @@ async function stateResponse(request: Request, env: Env, identity: Identity) {
     return json({ error: "ATLAS_DB binding is not configured" }, 503);
   // This route used to accept any method, so a GET could carry a mutation body
   // and a DELETE was silently treated as one too.
-  if (request.method !== "GET" && request.method !== "POST")
-    return json({ error: "Method not allowed" }, 405, { allow: "GET, POST" });
+  if (
+    request.method !== "GET" &&
+    request.method !== "POST" &&
+    request.method !== "DELETE"
+  )
+    return json({ error: "Method not allowed" }, 405, {
+      allow: "GET, POST, DELETE",
+    });
   const db = env.ATLAS_DB;
   const id = identity.id;
   // Reads no longer write. ensureProfile() ran on every request including
   // GETs, which meant a D1 write on every page load.
   if (request.method === "GET") return json(await snapshot(db, id));
+  if (request.method === "DELETE") return forgetProfile(db, identity);
 
   let body: unknown;
   try {
@@ -1103,20 +1161,110 @@ async function stateResponse(request: Request, env: Env, identity: Identity) {
   return json(await snapshot(db, id));
 }
 
+/**
+ * `DELETE /api/state` — erases everything stored against the caller's profile and
+ * expires the identity cookie, so the next request mints a fresh anonymous one.
+ *
+ * There was previously no way to delete a profile's data at all, which is both a
+ * data-protection gap and a testability one: there was no way to return the store
+ * to a known-empty state.
+ *
+ * The child tables declare `ON DELETE CASCADE`, but they are deleted explicitly
+ * so the result does not depend on whether foreign-key enforcement is on for the
+ * connection.
+ */
+async function forgetProfile(db: D1Database, identity: Identity) {
+  const id = identity.id;
+  await db.batch([
+    db.prepare("DELETE FROM atlas_favorites WHERE profile_id = ?").bind(id),
+    db.prepare("DELETE FROM atlas_progress WHERE profile_id = ?").bind(id),
+    db.prepare("DELETE FROM atlas_notes WHERE profile_id = ?").bind(id),
+    db.prepare("DELETE FROM atlas_plans WHERE profile_id = ?").bind(id),
+    db.prepare("DELETE FROM atlas_profiles WHERE profile_id = ?").bind(id),
+  ]);
+  return json({ deleted: true }, 200, {
+    "set-cookie": `${PROFILE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`,
+  });
+}
+
 const PACKED_MVT_PATH =
   /^\/data\/world-mvt\/([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.pbf$/;
 
+/**
+ * Tiles were never cached anywhere. The response already carried
+ * `max-age=31536000, immutable`, but a Worker response is not stored at the
+ * edge unless the Worker puts it in the Cache API itself — so every tile was a
+ * full origin round-trip forever (measured at 0.55-1.07 s each against the live
+ * deployment, with no `CF-Cache-Status` header at all). At 10-30 tiles per
+ * viewport that is the dominant cost of panning the map.
+ *
+ * Both hits and misses are cached: the release id is part of the path, so a data
+ * refresh publishes new URLs rather than invalidating these, and caching the
+ * misses matters because the client computes its tile range arithmetically and
+ * therefore asks for tiles that legitimately do not exist.
+ */
+const TILE_MISS_CACHE_SECONDS = 3600;
+
 async function packedMvtResponse(
   request: Request,
-  env: Env
+  env: Env,
+  ctx: ExecutionContext
 ): Promise<Response | null> {
   const match = new URL(request.url).pathname.match(PACKED_MVT_PATH);
   if (!match) return null;
   const [, releaseId = "", layerDirectory = "", zoom = "", x = "", y = ""] =
     match;
   if (!releaseId || !layerDirectory || !zoom || !x || !y) return null;
+
+  // The Cache API only accepts GET keys, so HEAD shares the GET entry and the
+  // body is dropped on the way out.
+  const cache = caches.default;
+  const cacheKey = new Request(request.url, { method: "GET" });
+  const cached = await cache.match(cacheKey);
+  if (cached) return stripBodyForHead(cached, request.method);
+
+  const built = await buildPackedMvtResponse(request, env, {
+    releaseId,
+    layerDirectory,
+    zoom,
+    x,
+    y,
+  });
+  if (built.status === 200 || built.status === 404)
+    ctx.waitUntil(cache.put(cacheKey, built.clone()));
+  return stripBodyForHead(built, request.method);
+}
+
+function stripBodyForHead(response: Response, method: string) {
+  if (method !== "HEAD") return response;
+  return new Response(null, {
+    status: response.status,
+    headers: response.headers,
+  });
+}
+
+async function buildPackedMvtResponse(
+  request: Request,
+  env: Env,
+  tile: {
+    releaseId: string;
+    layerDirectory: string;
+    zoom: string;
+    x: string;
+    y: string;
+  }
+): Promise<Response> {
+  const { releaseId, layerDirectory, zoom, x, y } = tile;
   const basePath = `/data/world-mvt/${releaseId}/packed/${layerDirectory}/${zoom}/${x}`;
   const noCompression = { "accept-encoding": "identity" };
+  const missHeaders = {
+    "cache-control": `public, max-age=${TILE_MISS_CACHE_SECONDS}`,
+  };
+  // The current build emits exactly one part per column (verified: zero
+  // `<x>.<n>.json` files across all 4,844 shards), and a missing part index is
+  // served the SPA shell rather than a 404, so this loop already exits after two
+  // subrequests. The bound stays as forward compatibility for a build that does
+  // split a column.
   for (let part = 0; part < 32; part += 1) {
     const suffix = part === 0 ? "" : `.${part}`;
     const indexResponse = await env.ASSETS.fetch(
@@ -1126,7 +1274,8 @@ async function packedMvtResponse(
     );
     const contentType = indexResponse.headers.get("content-type") || "";
     if (!indexResponse.ok || !contentType.includes("json")) {
-      if (part === 0) return new Response(null, { status: 404 });
+      if (part === 0)
+        return new Response(null, { status: 404, headers: missHeaders });
       break;
     }
     const index = (await indexResponse.json()) as Record<
@@ -1151,12 +1300,22 @@ async function packedMvtResponse(
         },
       })
     );
-    if (!shardResponse.ok) return new Response(null, { status: 404 });
+    if (!shardResponse.ok)
+      return new Response(null, { status: 404, headers: missHeaders });
     const payload = new Uint8Array(await shardResponse.arrayBuffer());
-    const start =
-      shardResponse.status === 206 || payload.byteLength === length
-        ? 0
-        : offset;
+    const ranged =
+      shardResponse.status === 206 || payload.byteLength === length;
+    const start = ranged ? 0 : offset;
+    if (!ranged) {
+      // The whole shard came back (up to 2.7 MB) because Range was ignored. The
+      // slice below still yields the correct tile, so this stays a warning
+      // rather than a 502 — turning it into an error would break every tile the
+      // moment the asset layer stopped honouring Range — but it is now visible
+      // instead of silent.
+      console.warn(
+        `atlas: range ignored for ${basePath}${suffix}.bin, buffered ${payload.byteLength} B for a ${length} B tile`
+      );
+    }
     if (start + length > payload.byteLength)
       return new Response(null, { status: 502 });
     const headers = new Headers({
@@ -1164,21 +1323,23 @@ async function packedMvtResponse(
       "cache-control": "public, max-age=31536000, immutable",
       "content-length": String(length),
     });
-    if (request.method === "HEAD")
-      return new Response(null, { status: 200, headers });
     return new Response(payload.slice(start, start + length), {
       status: 200,
       headers,
     });
   }
-  return new Response(null, { status: 404 });
+  return new Response(null, { status: 404, headers: missHeaders });
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.match(PACKED_MVT_PATH)) {
-      const packed = await packedMvtResponse(request, env);
+      const packed = await packedMvtResponse(request, env, ctx);
       if (packed) return packed;
     }
     // Identity is resolved once per request and the Set-Cookie attached on the

@@ -9,6 +9,13 @@ name: Refresh real data release
 # loop the right way round — when a human merges, the merge is authored by them
 # and `deploy-cloudflare.yml` runs — and it puts a review in front of a data diff
 # that grows the repository every time it lands.
+#
+# Three of the six source packages cannot be fetched by a runner: the BLS serves
+# an "Access Denied" page to automated retrieval, and the ILO's ISCO-08 workbook
+# has no stable published URL. `data/raw/` is gitignored, so on a clean runner
+# they are simply absent and this job stops at the download step with a message
+# naming them. That is the honest outcome, not a bug to paper over — until those
+# three are seeded, a scheduled run cannot produce a complete release.
 
 on:
   workflow_dispatch:
@@ -32,7 +39,19 @@ jobs:
       - name: Install data build dependency
         run: python -m pip install --disable-pip-version-check openpyxl
       - name: Download official source packages
+        id: download
         run: python scripts/download_real_data.py
+      - name: Explain a missing source in the run summary
+        if: failure() && steps.download.outcome == 'failure'
+        run: |
+          {
+            echo "### Source packages are missing"
+            echo
+            echo "Three of the six are not machine-fetchable — the BLS blocks automated"
+            echo "retrieval and the ILO's ISCO-08 workbook has no stable URL — and"
+            echo '`data/raw/` is gitignored, so a clean runner starts with none of them.'
+            echo "See the download step's log for the exact filenames and source pages."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Build and validate compact release
         run: python scripts/build_real_data.py
       - name: Check release integrity
@@ -41,11 +60,20 @@ jobs:
           import json
           from pathlib import Path
           manifest = json.loads(Path("client/public/data/manifest.json").read_text())
+          counts = manifest["counts"]
           assert manifest["mode"] == "real-source-release"
           assert manifest["integrity"]["syntheticRecords"] == 0
-          assert manifest["counts"]["occupations"] > 900
-          assert manifest["counts"]["taskStatementCount"] > 10000
-          print("validated", manifest["releaseId"])
+          assert counts["occupations"] > 900
+          assert counts["taskStatementCount"] > 10000
+          # The four assertions above all read O*NET-derived numbers, so a release
+          # that silently lost the BLS wage/projection joins or the ISCO taxonomy
+          # used to pass this gate looking healthy. These cover the rest.
+          assert counts["occupationsWithBls"] > 900, counts["occupationsWithBls"]
+          assert counts["occupationsWithBlsProjections"] > 900, counts["occupationsWithBlsProjections"]
+          assert counts["isco"] > 500, counts["isco"]
+          assert counts["naics"] > 2000, counts["naics"]
+          assert counts["isic"] > 800, counts["isic"]
+          print("validated", manifest["releaseId"], counts)
           PY
 
       - name: Commit updated release files

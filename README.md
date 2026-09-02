@@ -74,8 +74,13 @@ listing nothing read was dropped. See `PERFORMANCE_BUDGET.md`.
 
 ### Rebuilding the release from source
 
-The Python pipeline downloads and rebuilds the official release. It is not part
-of `pnpm build` — it runs monthly in CI, or by hand:
+Six official packages feed `scripts/build_real_data.py`. Three of them —
+`scripts/download_real_data.py` fetches them — come from O\*NET, the Census
+Bureau and the UN Statistics Division. The other three cannot be fetched by a
+script: the BLS serves an "Access Denied" page to automated retrieval, and the
+ILO's ISCO-08 workbook has no stable published URL. Download those in a browser
+and drop them in `data/raw/` (gitignored); `download_real_data.py` names each one
+and its source page, and leaves any file already present alone.
 
 ```bash
 python -m pip install openpyxl && pnpm data:refresh
@@ -127,10 +132,19 @@ would land new data that never deployed.
 
 ## Known gaps
 
+- The monthly `refresh-data` workflow cannot complete unattended. `data/raw/` is
+  gitignored, so a clean runner has none of the three browser-only source
+  packages, and the job stops at the download step naming them. Seeding them —
+  or accepting a manual refresh — is the choice to make; until then the release
+  in git is rebuilt by hand.
 - `preview_database_id` in `wrangler.jsonc` still equals `database_id`, so
   `wrangler dev --remote` and any preview deployment write to **production** D1.
   Fixing it needs account credentials: `npx wrangler d1 create atlas-roadmaps-preview`,
   then paste the returned id. Plain `wrangler dev` is unaffected.
+- Rollup chunk hashes are not reproducible between a Windows checkout and CI's
+  Linux runner — the chunk bodies match, only the emitted import filenames
+  differ — so a deployed asset filename cannot be compared against a local build
+  to prove which commit is live. Read the deployed `index.html` instead.
 - Roughly 807 MB of tile shards are committed to git. R2 is the right home for
   them; moving them means rewriting history, which is its own project.
 - No raster social card exists, so `og:image` is deliberately absent rather than

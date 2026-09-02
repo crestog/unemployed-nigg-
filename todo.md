@@ -29,12 +29,12 @@
 - [x] Replace the dashboard-like explorer with a full-screen pannable/zoomable real-data canvas and camera-jumping search.
 - [x] Add zoom-dependent labels, cluster focus, layer switching, and a collapsible evidence inspector.
 - [ ] Add lasso selection, hover neighborhoods, and linked brushing across canvas layers.
-- [ ] Verify the local checkpoint commit, GitHub main branch, Cloudflare deployment commit, and live HTML fingerprint.
-- [ ] Diagnose any Cloudflare branch, cache, Worker/Pages, or automatic-deploy mismatch.
-- [ ] Fix the deployment path and confirm the live URL serves the infinite-atlas build.
+- [x] Verify the local checkpoint commit, GitHub main branch, Cloudflare deployment commit, and live HTML fingerprint.
+- [x] Diagnose any Cloudflare branch, cache, Worker/Pages, or automatic-deploy mismatch.
+- [x] Fix the deployment path and confirm the live URL serves the infinite-atlas build.
 - [ ] Keep all repository changes and pushes credential-free from the sandbox; do not require user sign-in on the sandbox computer.
 - [ ] Make the repository self-contained for Cloudflare automatic deployment and document the exact provider-side connection state.
-- [ ] Recheck the live bundle after the next Cloudflare deployment attempt and report only the minimum remaining user action if it is still stale.
+- [x] Recheck the live bundle after the next Cloudflare deployment attempt and report only the minimum remaining user action if it is still stale.
 - [x] Inspect Every Noise directly and record its zoom, clustering, label, and navigation behavior as the target interaction contract.
 - [x] Replace the current crowded DOM graph with a map-scale level-of-detail renderer that keeps the full real-data world navigable.
 - [x] Remove default numeric labels and overlap-prone text; show names only at appropriate zoom thresholds with collision-aware placement.
@@ -86,7 +86,7 @@
 - [ ] Validate each increment on desktop and mobile with real records, zoom extremes, selection routes, search, accessibility checks, production build, GitHub push, and Cloudflare release verification.
 - [x] Verify USAJOBS and EURES official handoff options, permitted query parameters, user-facing country/eligibility limits, attribution, and non-scraping boundaries.
 - [x] Add source-labelled external opportunity handoffs that pass an occupation title and never present third-party listings as Atlas records.
-- [ ] Acquire and normalize public ESCO and ISCO modules using their documented distributions, preserve releases and languages, and keep mappings visibly separate from O*NET records. The versioned ISCO-08 spine ships; ESCO v1.2.0 has an explicit official-service lookup and unavailable state, while a downloadable, multilingual v1.2.1 snapshot still requires its email-confirmed acquisition flow.
+- [ ] Acquire and normalize public ESCO and ISCO modules using their documented distributions, preserve releases and languages, and keep mappings visibly separate from O\*NET records. The versioned ISCO-08 spine ships; ESCO v1.2.0 has an explicit official-service lookup and unavailable state, while a downloadable, multilingual v1.2.1 snapshot still requires its email-confirmed acquisition flow.
 - [x] Acquire a dated official BLS employment-projections release, validate SOC coverage and vintage, and expose only recorded baseline/projection fields in comparison.
 - [x] Extend the role comparison workspace with international classification context and BLS outlook evidence while retaining no-fit and no-transition-score limits.
 - [x] Stop map pan, wheel zoom, and lasso selection when the pointer is over the inspector, search, breadcrumbs, field guide, controls, drawer, or any text-selectable overlay.
@@ -128,3 +128,11 @@
 - [x] Establish an Atlas mobile interaction contract: one-finger pan, cursor-equivalent pinch/wheel zoom, non-overlapping bottom sheets, visible close/back actions, and usable source inspection.
 - [x] Locate the previously collected Estonia startup dataset and audit its provenance, source terms, category/status basis, coordinate origin, timestamp, and reusable-display eligibility before integrating any rows.
 - [ ] Integrate only verified, display-permitted Estonia startup records as a clearly separate source layer with row-level provenance and coverage limits; keep any incomplete records aggregate-only or excluded.
+
+## Open, from the September 2026 audit
+
+- [x] Re-verify on production that a malformed `/api/state` body returns 400 and writes nothing, after the fix reached `main`.
+- [x] Diagnose why `/api/ai/roadmap` served placeholder nodes on production: the 18 s ceiling was below the model's real latency for that schema, and `parseAiPayload(null)` returned a truthy `{}`, so the timeout was reported as a malformed provider response.
+- [ ] Confirm on production that `/api/ai/roadmap` now returns `mode: "ai"` rather than the fallback, and record how long it actually takes.
+- [ ] Decide how the monthly data refresh should handle the three browser-only source packages: seed them somewhere the runner can read, or accept that the release is rebuilt by hand and drop the schedule.
+- [ ] Create a preview D1 database so `preview_database_id` stops pointing at production; needs account credentials.

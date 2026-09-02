@@ -348,9 +348,17 @@ def parse_isco() -> list[dict]:
 
 
 def main() -> None:
-    missing = [key for key, source in SOURCES.items() if not source["path"].exists()]
+    missing = [source["path"] for source in SOURCES.values() if not source["path"].exists()]
     if missing:
-        raise SystemExit(f"Missing source files: {', '.join(missing)}")
+        # Naming the files beats naming the dictionary keys: three of the six
+        # cannot be downloaded and have to be placed by hand, so the reader of
+        # this message is usually about to go and find them.
+        raise SystemExit(
+            "Missing source files:\n"
+            + "\n".join(f"  {path}" for path in missing)
+            + "\n\nRun scripts/download_real_data.py first; it fetches what it can "
+            "and names what it cannot."
+        )
 
     occupations, onet_counts = parse_onet()
     bls = parse_bls()

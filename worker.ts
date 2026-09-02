@@ -129,6 +129,13 @@ const PLAN_SCHEMA = {
   additionalProperties: false,
 };
 
+// The node and edge counts are a latency budget, not a taste preference. Each
+// node carries eight required string fields, so 16 of them plus 24 edges is
+// roughly 2,700 tokens of constrained JSON — which the model could not produce
+// inside the request timeout, so the endpoint served placeholder nodes every
+// time. Eight to twelve nodes is the same shape of roadmap at a size that
+// finishes. Keep the prompt in `aiRoadmapResponse` in step with these bounds:
+// asking for a count the schema forbids wastes a whole generation.
 const ROADMAP_SCHEMA = {
   type: "object",
   properties: {
@@ -162,8 +169,8 @@ const ROADMAP_SCHEMA = {
         ],
         additionalProperties: false,
       },
-      minItems: 12,
-      maxItems: 16,
+      minItems: 8,
+      maxItems: 12,
     },
     edges: {
       type: "array",
@@ -173,8 +180,8 @@ const ROADMAP_SCHEMA = {
         required: ["source", "target"],
         additionalProperties: false,
       },
-      minItems: 11,
-      maxItems: 24,
+      minItems: 7,
+      maxItems: 18,
     },
   },
   required: [
@@ -332,7 +339,12 @@ export function compactTopics(topics: unknown, max = 120): TopicContext[] {
 }
 
 export function parseAiPayload(raw: unknown): Record<string, unknown> | null {
-  const result = (raw || {}) as Record<string, unknown>;
+  // Nullish in means nothing to unwrap. Coercing it to `{}` and returning that
+  // was the bug that hid the roadmap timeout: `{}` is truthy, so every caller's
+  // `if (!generated)` check passed, and a request that never got an answer was
+  // reported as one that got an unusable answer.
+  if (raw === null || raw === undefined) return null;
+  const result = raw as Record<string, unknown>;
   const candidate = result.response ?? result.result ?? result.output ?? result;
   if (typeof candidate === "object" && candidate !== null)
     return candidate as Record<string, unknown>;
@@ -413,9 +425,23 @@ function fallbackPlan(input: AiPlanRequest, topics: TopicContext[]) {
 // -----------------------------------------------------------------------------
 
 const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-const AI_MAX_TOKENS = 2600;
+/**
+ * Enough for the largest schema below to close its JSON. At 2600 a 16-node
+ * roadmap could not finish, and a generation cut off mid-object is wasted spend:
+ * billed in full, then discarded by the parser.
+ */
+const AI_MAX_TOKENS = 3200;
 const AI_TEMPERATURE = 0.2;
-const AI_TIMEOUT_MS = 18_000;
+/**
+ * Measured against production, not guessed: /api/ai/chat answers in ~5.7 s and
+ * /api/ai/plan in ~9.5 s, but the roadmap schema is several times larger and at
+ * 18 s it timed out on *every* request — four consecutive probes each returned
+ * placeholder nodes ("Foundations 1", "Foundations 2", …) after 18.8 s. Nobody
+ * had ever received a generated roadmap from the deployed Worker. The ceiling is
+ * a guard against a hung provider, so it belongs above the slowest real answer
+ * rather than in the middle of the distribution.
+ */
+const AI_TIMEOUT_MS = 40_000;
 /** Generations per rolling hour, per identity. */
 const AI_REQUESTS_PER_WINDOW = 20;
 /**
@@ -508,6 +534,11 @@ async function runJsonModel(
 ) {
   if (!env.AI) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // A distinct value, so "the model returned nothing" and "we stopped waiting"
+  // stay tellable apart. Racing against a plain `null` conflated them, and the
+  // conflation is what made an every-request timeout look like a provider
+  // returning malformed output.
+  const timedOut = Symbol("ai-timeout");
   try {
     const generation = env.AI.run(AI_MODEL, {
       messages,
@@ -522,10 +553,16 @@ async function runJsonModel(
     });
     const response = await Promise.race([
       generation,
-      new Promise<null>(resolve => {
-        timer = setTimeout(() => resolve(null), AI_TIMEOUT_MS);
+      new Promise<typeof timedOut>(resolve => {
+        timer = setTimeout(() => resolve(timedOut), AI_TIMEOUT_MS);
       }),
     ]);
+    if (response === timedOut) {
+      console.error(
+        `atlas: AI generation exceeded ${AI_TIMEOUT_MS} ms, serving the fallback`
+      );
+      return null;
+    }
     return parseAiPayload(response);
   } catch (error) {
     console.error("atlas: AI generation error", error);
@@ -558,7 +595,7 @@ async function aiRoadmapResponse(
   const reference = referenceTopics.length
     ? `\nRelated public topic candidates (use only if genuinely relevant; do not copy their IDs):\n${referenceTopics.map(item => `${item.title}: ${item.summary}`).join("\n")}`
     : "";
-  const system = `You are Atlas, a fast roadmap generator. Create a useful learning roadmap in one response for the requested topic. Do not ask follow-up questions. Make sensible beginner-friendly assumptions and state them. Return exactly 12 to 16 concise nodes grouped into 4 to 5 sequential phases. Use stable ids like phase-1-topic-1, with no spaces. Each node must have a short description, explanation, practice task, and observable checkpoint; keep each field to one sentence. Prefer a clear core spine with a few alternatives or optional nodes. Edges must connect only existing node IDs and form a readable progression. This is an AI-generated roadmap, so do not claim it is official or that resources were verified.`;
+  const system = `You are Atlas, a fast roadmap generator. Create a useful learning roadmap in one response for the requested topic. Do not ask follow-up questions. Make sensible beginner-friendly assumptions and state them. Return 8 to 12 concise nodes grouped into 4 sequential phases. Use stable ids like phase-1-topic-1, with no spaces. Each node must have a short description, explanation, practice task, and observable checkpoint; keep each field to one sentence. Prefer a clear core spine with a few alternatives or optional nodes. Edges must connect only existing node IDs and form a readable progression. This is an AI-generated roadmap, so do not claim it is official or that resources were verified.`;
   const user = `Topic: ${topic}\nLearner level: ${level}\nLearner goal: ${goal}\nAvailable time: ${hours} hours per week${reference}`;
   // Metered before the model call, not before validation: a malformed body
   // should not cost the caller part of their hourly budget.

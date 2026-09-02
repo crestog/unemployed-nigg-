@@ -432,6 +432,17 @@ describe("chainEdges", () => {
 });
 
 describe("parseAiPayload", () => {
+  it("returns null when there is nothing to unwrap", () => {
+    // This is the one that mattered. `(raw || {})` made a nullish payload come
+    // back as `{}`, which is truthy — so `if (!generated)` never fired, and the
+    // roadmap endpoint's 18 s timeout was reported as the provider returning an
+    // unusable answer rather than as no answer at all. Four consecutive
+    // production probes served placeholder nodes after 18.8 s before this was
+    // traced back to here.
+    expect(parseAiPayload(null)).toBeNull();
+    expect(parseAiPayload(undefined)).toBeNull();
+  });
+
   it("unwraps the provider envelope", () => {
     expect(parseAiPayload({ response: { answer: "hi" } })).toEqual({
       answer: "hi",

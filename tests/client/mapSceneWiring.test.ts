@@ -47,3 +47,41 @@ describe("MapLibreWorldScene event wiring", () => {
     expect(scene).toMatch(/setProjection\(\{ type: "globe" \}\)/);
   });
 });
+
+// The globe consumes GeoJSON through `@maplibre/geojson-vt`, which tiles in planar
+// Web Mercator. Three features in world-atlas' countries-50m step straight across
+// the antimeridian, which on a sphere is a short hop and in the plane is a
+// 359.9°-wide edge: Russia's Wrangel Island painted a band across the Arctic (a
+// probe in northern Canada returned "Russian Federation"), Fiji's Vanua Levu drew
+// the same band across the South Pacific, and Antarctica's pole-encircling coast
+// filled a strip instead of a cap. The conditioning has to be applied to *every*
+// geometry handed to a MapLibre source, so assert the call sites rather than the
+// helper.
+describe("MapLibreWorldScene geometry conditioning", () => {
+  it("conditions country and boundary geometry for a planar tiler", () => {
+    expect(scene).toMatch(/geometry: splitGeometryAtAntimeridian\(item\.feature\.geometry\)/);
+    expect(scene).toMatch(/geometry: splitGeometryAtAntimeridian\(item\.geometry\)/);
+    expect(scene).not.toMatch(/geometry: item\.geometry,/);
+  });
+});
+
+// Every array reaching this component is derived upstream from `mapView.bounds`,
+// a fresh array on every camera update, so keying uploads on object identity
+// re-tiled all five sources on every frame of a drag — and each `setData`
+// restarts symbol placement, which is what made labels appear at positions
+// computed for an older camera.
+describe("MapLibreWorldScene source uploads", () => {
+  it("routes every source through one content-keyed upload path", () => {
+    const uploads = scene.match(/useGeoJsonSource\(mapRef, styleReady, "[^"]+"/g) ?? [];
+    expect(uploads).toHaveLength(5);
+    expect(scene.match(/sourceSetData\(map,/g) ?? []).toHaveLength(1);
+  });
+
+  it("keys the upload effect on the signature, not on the records array", () => {
+    const hook = scene.match(/function useGeoJsonSource<T>\([\s\S]*?\n\}/)?.[0] ?? "";
+    expect(hook).not.toBe("");
+    const syncEffect = hook.match(/const map = mapRef\.current;[\s\S]*?\]\);/)?.[0] ?? "";
+    expect(syncEffect).toMatch(/\}, \[mapRef, ready, signature, sourceId, toFeature\]\);/);
+    expect(syncEffect).toMatch(/recordsRef\.current/);
+  });
+});

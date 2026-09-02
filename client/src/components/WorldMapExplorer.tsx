@@ -719,7 +719,27 @@ export default function WorldMapExplorer() {
             : 12;
     return angularDistance <= visibleRadius;
   }, [mapView]);
-  const viewportGeoBounds = mapView?.bounds ?? null;
+  // `mapView.bounds` is a brand-new array on every camera update, and it feeds
+  // the India tile effect plus four viewport-culling memos — so its identity
+  // alone re-ran all of them on every frame of a drag, and the two memos that
+  // early-return `[]` handed a fresh empty array down to the MapLibre scene each
+  // time, which re-uploaded every GeoJSON source and restarted symbol placement.
+  //
+  // Snapping the box outward onto a 1/8° grid keeps the identity stable for as
+  // long as the viewport stays inside one cell. Expanding (floor the west/south
+  // corner, ceil the east/north one) rather than rounding guarantees the snapped
+  // box still contains the real one, so no edge feature is ever culled.
+  const rawMapBounds = mapView?.bounds ?? null;
+  const boundsGridStep = 8;
+  const snappedWest = rawMapBounds ? Math.floor(rawMapBounds[0][0] * boundsGridStep) / boundsGridStep : 0;
+  const snappedSouth = rawMapBounds ? Math.floor(rawMapBounds[0][1] * boundsGridStep) / boundsGridStep : 0;
+  const snappedEast = rawMapBounds ? Math.ceil(rawMapBounds[1][0] * boundsGridStep) / boundsGridStep : 0;
+  const snappedNorth = rawMapBounds ? Math.ceil(rawMapBounds[1][1] * boundsGridStep) / boundsGridStep : 0;
+  const hasMapBounds = Boolean(rawMapBounds);
+  const viewportGeoBounds = useMemo<[[number, number], [number, number]] | null>(
+    () => (hasMapBounds ? [[snappedWest, snappedSouth], [snappedEast, snappedNorth]] : null),
+    [hasMapBounds, snappedEast, snappedNorth, snappedSouth, snappedWest]
+  );
   useEffect(() => {
     if (!indiaNode || mapZoom < INDIA_ADM1_ZOOM || !indiaInView) return;
     if (!indiaTileManifest && !indiaManifestRequestedRef.current) {

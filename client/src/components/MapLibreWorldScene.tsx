@@ -1,8 +1,9 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { LngLatBounds, Map as MapLibreMapClass, setWorkerUrl } from "maplibre-gl";
 import type { GeoJSONSource, Map as MapLibreMap, MapGeoJSONFeature, StyleSpecification } from "maplibre-gl";
 import type { GlobalMvtManifest } from "@/lib/worldMvt";
 import { globalMvtTileUrl } from "@/lib/worldMvt";
+import { splitGeometryAtAntimeridian } from "@/lib/antimeridian";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 
@@ -124,6 +125,7 @@ function asCountryFeature(item: CountryRecord): Feature {
   return {
     ...item.feature,
     id: item.id,
+    geometry: splitGeometryAtAntimeridian(item.feature.geometry),
     properties: {
       ...(item.feature.properties ?? {}),
       atlasId: item.id,
@@ -154,7 +156,7 @@ function asBoundaryFeature(item: BoundaryRecord): Feature {
   return {
     type: "Feature",
     id: item.id,
-    geometry: item.geometry,
+    geometry: splitGeometryAtAntimeridian(item.geometry),
     properties: {
       atlasId: item.id,
       name: item.name,
@@ -177,6 +179,20 @@ function asLocalityFeature(item: LocalityRecord): Feature {
       selected: item.selected,
     },
   } as Feature;
+}
+
+// Content signatures for the five GeoJSON sources. See `useGeoJsonSource` for why
+// these exist rather than keying the uploads on the arrays' object identities.
+type FlaggedRecord = { id: string; label: boolean; selected: boolean };
+
+function flagSignature(records: FlaggedRecord[]) {
+  return records.map(item => `${item.id}~${+item.label}${+item.selected}`).join("|");
+}
+
+function countriesSignature(records: CountryRecord[]) {
+  return records
+    .map(item => `${item.id}~${item.color}~${+item.visible}${+item.label}${+item.selected}`)
+    .join("|");
 }
 
 function atlasStyle(input: {
@@ -374,6 +390,45 @@ function toView(map: MapLibreMap): ViewState & { bounds: [[number, number], [num
 function sourceSetData(map: MapLibreMap, sourceId: string, data: GeoJSON.FeatureCollection) {
   const source = map.getSource(sourceId) as GeoJSONSource | undefined;
   source?.setData(data);
+}
+
+/**
+ * Uploads `records` to one GeoJSON source, but only when their *content* changed.
+ *
+ * All five arrays are derived upstream from `mapView.bounds` — a fresh array on
+ * every camera update — and the memos feeding adm2/localities hand back a
+ * brand-new `[]` whenever it changes. While all five were pushed from a single
+ * effect keyed on all five identities, one drag re-uploaded every source per view
+ * update, the whole 241-country topology included.
+ *
+ * That is not a cheap no-op: each `setData` re-serialises to the worker, re-runs
+ * geojson-vt, re-subdivides the result for the globe, and restarts symbol
+ * placement. Restarted placement is why labels faded in at positions computed for
+ * an older camera — the far-side label that looked like missing occlusion — and
+ * the re-tiling is why fast rotation stuttered instead of feeling solid.
+ *
+ * Geometry is deliberately absent from the signatures: it is keyed by record id,
+ * and every geometry source here is load-once — the static countries topology,
+ * and India's tiles, which are requested at one zoom per layer, so a given id's
+ * geometry never arrives twice at a different level of detail.
+ */
+function useGeoJsonSource<T>(
+  mapRef: { current: MapLibreMap | null },
+  ready: boolean,
+  sourceId: string,
+  records: T[],
+  signature: string,
+  toFeature: (item: T) => Feature
+) {
+  const recordsRef = useRef(records);
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    sourceSetData(map, sourceId, featureCollection(recordsRef.current.map(toFeature) as any));
+  }, [mapRef, ready, signature, sourceId, toFeature]);
 }
 
 function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
@@ -702,17 +757,22 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !styleReady) return;
-    if (globalMvt) {
-      addGlobalMvtLayers(map, globalMvt);
-      ensureGlobeProjection(map);
-    }
-    sourceSetData(map, "atlas-countries", featureCollection(countries.map(asCountryFeature) as any));
-    sourceSetData(map, "atlas-country-labels", featureCollection(countryLabels.map(asCountryLabelFeature) as any));
-    sourceSetData(map, "atlas-adm1", featureCollection(adm1.map(asBoundaryFeature) as any));
-    sourceSetData(map, "atlas-adm2", featureCollection(adm2.map(asBoundaryFeature) as any));
-    sourceSetData(map, "atlas-localities", featureCollection(localities.map(asLocalityFeature) as any));
-  }, [adm1, adm2, countryLabels, countries, globalMvt, localities, styleReady]);
+    if (!map || !styleReady || !globalMvt) return;
+    addGlobalMvtLayers(map, globalMvt);
+    ensureGlobeProjection(map);
+  }, [globalMvt, styleReady]);
+
+  const countriesKey = useMemo(() => countriesSignature(countries), [countries]);
+  const countryLabelsKey = useMemo(() => flagSignature(countryLabels), [countryLabels]);
+  const adm1Key = useMemo(() => flagSignature(adm1), [adm1]);
+  const adm2Key = useMemo(() => flagSignature(adm2), [adm2]);
+  const localitiesKey = useMemo(() => flagSignature(localities), [localities]);
+
+  useGeoJsonSource(mapRef, styleReady, "atlas-countries", countries, countriesKey, asCountryFeature);
+  useGeoJsonSource(mapRef, styleReady, "atlas-country-labels", countryLabels, countryLabelsKey, asCountryLabelFeature);
+  useGeoJsonSource(mapRef, styleReady, "atlas-adm1", adm1, adm1Key, asBoundaryFeature);
+  useGeoJsonSource(mapRef, styleReady, "atlas-adm2", adm2, adm2Key, asBoundaryFeature);
+  useGeoJsonSource(mapRef, styleReady, "atlas-localities", localities, localitiesKey, asLocalityFeature);
 
   return (
     <div className="absolute inset-0 h-full w-full" data-maplibre-world>

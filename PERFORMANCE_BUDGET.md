@@ -86,11 +86,19 @@ each one was absent at some point and cost a full re-download when it was:
   both the part index and the assembled tile in `caches.default`. Without the
   Cache API a Worker response is not edge-cached at all, whatever its headers
   say — an `immutable` tile was still a full origin round-trip on every request.
-- Data releases under `/data/**` get cache headers from the Worker generally,
-  not from a list of enumerated paths.
+- Everything that is a real file gets its `Cache-Control` from
+  `client/public/_headers`, not from the Worker. With Workers Static Assets a
+  request that matches a file is answered by the asset layer and never reaches
+  the Worker, so a header set on the Worker's fetch path applied to nothing:
+  production served the entry chunk, the stylesheet, `taxonomies.json` and
+  `occupations-index.json` with the asset layer's default
+  `max-age=0, must-revalidate`, measured live. Fingerprinted `/assets/**` is now
+  `immutable`, `/data/**` gets a day with a week of stale-while-revalidate, and
+  the two bare manifests keep a 300-second revalidate because they name the
+  current release.
 - The world manifest is fetched with the browser cache allowed to work. It used
-  to carry `cache: "no-store"`, which defeated the Worker's own `max-age`; the
-  `?v=` release stamp is what invalidates it.
+  to carry `cache: "no-store"`, which defeated its `max-age` outright; the `?v=`
+  release stamp is what invalidates it.
 - The service worker caches the app shell and the fingerprinted assets, so the
   app loads offline. Navigations are network-first, so a deploy is never masked
   by a stale shell.

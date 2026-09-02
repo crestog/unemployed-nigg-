@@ -872,10 +872,10 @@ async function ensureProfile(db: D1Database, id: string) {
  * on another. Rows arrive `ORDER BY updated_at DESC`, so within a slug the first
  * write wins and that is the newest one.
  */
-export function groupBySlug<Row extends { roadmap_slug: string; topic_id: string }, Value>(
-  rows: Row[],
-  value: (row: Row) => Value
-) {
+export function groupBySlug<
+  Row extends { roadmap_slug: string; topic_id: string },
+  Value,
+>(rows: Row[], value: (row: Row) => Value) {
   const grouped: Record<string, Record<string, Value>> = {};
   for (const row of rows) {
     if (!row.roadmap_slug || !row.topic_id) continue;
@@ -960,42 +960,6 @@ export function parseTopicIds(raw: string, planId: string): string[] {
     console.error(`atlas: unparseable topic_ids_json on plan ${planId}`, error);
     return [];
   }
-}
-
-/**
- * Cache-Control for static assets.
- *
- * This used to enumerate four specific paths, which meant the largest files in
- * the tree — `roadmap-content.json`, `occupations.json`, the roadmap graph —
- * shipped with no cache directive at all and were re-fetched on every visit. The
- * general rule now: anything under a release-scoped or hashed directory is
- * immutable, a bare manifest revalidates, and everything else under /data gets a
- * day with a week of stale-while-revalidate.
- */
-function withAssetCacheHeaders(response: Response, pathname: string) {
-  if (!response.ok) return response;
-  if (!pathname.startsWith("/data/")) return response;
-  const headers = new Headers(response.headers);
-  const immutable = "public, max-age=31536000, immutable";
-  if (/^\/data\/[^/]+\/manifest\.json$/.test(pathname)) {
-    // Manifests name the current release, so they are the one thing that must
-    // stay fresh; everything they point at is content-addressed by release id.
-    headers.set("cache-control", "public, max-age=300, must-revalidate");
-  } else if (/^\/data\/(india-tiles|world-mvt)\/[^/]+\//.test(pathname)) {
-    headers.set("cache-control", immutable);
-  } else if (pathname.endsWith("/manifest.json")) {
-    headers.set("cache-control", "public, max-age=300, must-revalidate");
-  } else {
-    headers.set(
-      "cache-control",
-      "public, max-age=86400, stale-while-revalidate=604800"
-    );
-  }
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
 }
 
 /**
@@ -1356,7 +1320,13 @@ export default {
       const handled = await apiResponse(request, env, url, identity);
       if (handled) return withIdentityCookie(handled, identity);
     }
-    return withAssetCacheHeaders(await env.ASSETS.fetch(request), url.pathname);
+    // Everything that is not an API call and not an assembled tile is a real
+    // file, and a real file never reaches this line in production: the asset
+    // layer answers it first. Cache-Control for those responses is configured
+    // in `client/public/_headers`, which is where it has to be — a header set
+    // here would only ever apply to a request that missed and fell through to
+    // the single-page-application shell.
+    return env.ASSETS.fetch(request);
   },
 };
 

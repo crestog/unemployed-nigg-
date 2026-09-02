@@ -1,0 +1,56 @@
+# Cache-Control for the static assets, applied by the asset layer itself.
+#
+# This has to live here rather than in `worker.ts`. With Workers Static Assets,
+# a request that matches a real file is answered by the asset layer and never
+# reaches the Worker, so a `withAssetCacheHeaders()` helper on the Worker's
+# fetch path only ever saw requests that missed — and the asset layer's own
+# default, `public, max-age=0, must-revalidate`, was what production actually
+# served for every JS bundle, stylesheet and data release. Measured live: the
+# entry chunk, `taxonomies.json` and `occupations-index.json` all revalidated
+# on every load.
+#
+# Wrangler uploads this file as asset metadata and excludes it from the served
+# asset manifest, so it is configuration, not a public file.
+#
+# Later rules override earlier ones for the same header, so the broad rule for a
+# directory comes first and the exceptions follow it.
+
+# Vite fingerprints everything under /assets, so the name changes whenever the
+# bytes do. Nothing here can go stale.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Vendored MapLibre glyph ranges. Not fingerprinted, so a month rather than a
+# year: re-vendoring the fonts has to be able to take effect.
+/fonts/*
+  Cache-Control: public, max-age=2592000
+
+# Committed data releases. A day, with a week of stale-while-revalidate, so a
+# refresh lands without a cold fetch on the visit that discovers it.
+/data/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+# Tile shards and their part indexes are release-scoped: the release id is in
+# the path, so a new release is a new URL.
+/data/world-mvt/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/data/india-tiles/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The bare manifests are the exception inside those directories — they name the
+# current release, so they are the one thing that must stay fresh. Everything
+# they point at is addressed by release id.
+/data/world-mvt/manifest.json
+  Cache-Control: public, max-age=300, must-revalidate
+
+/data/india-tiles/manifest.json
+  Cache-Control: public, max-age=300, must-revalidate
+
+# The service worker decides what the browser keeps. Caching it would pin a
+# deploy's caching policy in place for as long as the header lasted.
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/favicon.svg
+  Cache-Control: public, max-age=604800

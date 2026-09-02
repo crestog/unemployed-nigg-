@@ -3,3 +3,11 @@ node_modules
 .git
 *.min.js
 *.min.css
+
+# `_headers` is asset-layer configuration in its own line-oriented format;
+# Prettier has no parser for it and `pnpm format` fails outright on it.
+client/public/_headers
+
+# The committed data releases are the provenance record. Reformatting them would
+# rewrite hundreds of megabytes and produce a diff that hides the real one.
+client/public/data

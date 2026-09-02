@@ -12,8 +12,13 @@
 # Wrangler uploads this file as asset metadata and excludes it from the served
 # asset manifest, so it is configuration, not a public file.
 #
-# Later rules override earlier ones for the same header, so the broad rule for a
-# directory comes first and the exceptions follow it.
+# Every rule that matches contributes its value, and same-named values are
+# joined with a comma rather than overriding — a broad `/data/*` alongside a
+# narrower `/data/world-mvt/manifest.json` produced
+# `max-age=86400, …, max-age=31536000, immutable, max-age=300, must-revalidate`
+# on one response. So the rules below are deliberately disjoint: no path matches
+# two of them. `:release` matches exactly one segment, which is what keeps a
+# release directory from also matching the bare manifest beside it.
 
 # Vite fingerprints everything under /assets, so the name changes whenever the
 # bytes do. Nothing here can go stale.
@@ -25,27 +30,59 @@
 /fonts/*
   Cache-Control: public, max-age=2592000
 
-# Committed data releases. A day, with a week of stale-while-revalidate, so a
-# refresh lands without a cold fetch on the visit that discovers it.
-/data/*
-  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
-
 # Tile shards and their part indexes are release-scoped: the release id is in
-# the path, so a new release is a new URL.
-/data/world-mvt/*
+# the path, so a new release is a new URL and nothing has to be invalidated.
+/data/world-mvt/:release/*
   Cache-Control: public, max-age=31536000, immutable
 
-/data/india-tiles/*
+/data/india-tiles/:release/*
   Cache-Control: public, max-age=31536000, immutable
 
-# The bare manifests are the exception inside those directories — they name the
-# current release, so they are the one thing that must stay fresh. Everything
-# they point at is addressed by release id.
+# The bare manifests are the exception. They name the current release, so they
+# are the one thing that must stay fresh; everything they point at is addressed
+# by release id and covered by the two rules above.
+/data/manifest.json
+  Cache-Control: public, max-age=300, must-revalidate
+
 /data/world-mvt/manifest.json
   Cache-Control: public, max-age=300, must-revalidate
 
 /data/india-tiles/manifest.json
   Cache-Control: public, max-age=300, must-revalidate
+
+# The committed and derived data releases. A day, with a week of
+# stale-while-revalidate, so a refresh lands without making the visit that
+# discovers it wait. Listed one by one rather than as `/data/*`, which would
+# also match the release directories and the manifests above.
+/data/roadmaps/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/taxonomies.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/occupations-index.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/occupations-detail.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/occupations.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/roadmap-content.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/roadmap-graphs.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/international.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/world-venture.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/world-india-geography.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
 
 # The service worker decides what the browser keeps. Caching it would pin a
 # deploy's caching policy in place for as long as the header lasted.

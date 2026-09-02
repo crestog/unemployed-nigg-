@@ -93,9 +93,13 @@ each one was absent at some point and cost a full re-download when it was:
   production served the entry chunk, the stylesheet, `taxonomies.json` and
   `occupations-index.json` with the asset layer's default
   `max-age=0, must-revalidate`, measured live. Fingerprinted `/assets/**` is now
-  `immutable`, `/data/**` gets a day with a week of stale-while-revalidate, and
-  the two bare manifests keep a 300-second revalidate because they name the
-  current release.
+  `immutable`, the release-scoped tile directories are `immutable`, each data
+  release gets a day with a week of stale-while-revalidate, and the three bare
+  manifests keep a 300-second revalidate because they name the current release.
+  The rules are written to be disjoint: every matching rule contributes its
+  value and same-named values are comma-joined rather than overridden, so an
+  overlapping pair produced one response carrying three `max-age` values and
+  both `immutable` and `must-revalidate`.
 - The world manifest is fetched with the browser cache allowed to work. It used
   to carry `cache: "no-store"`, which defeated its `max-age` outright; the `?v=`
   release stamp is what invalidates it.

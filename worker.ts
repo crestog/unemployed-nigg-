@@ -433,15 +433,15 @@ const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const AI_MAX_TOKENS = 3200;
 const AI_TEMPERATURE = 0.2;
 /**
- * Measured against production, not guessed: /api/ai/chat answers in ~5.7 s and
- * /api/ai/plan in ~9.5 s, but the roadmap schema is several times larger and at
- * 18 s it timed out on *every* request — four consecutive probes each returned
- * placeholder nodes ("Foundations 1", "Foundations 2", …) after 18.8 s. Nobody
- * had ever received a generated roadmap from the deployed Worker. The ceiling is
- * a guard against a hung provider, so it belongs above the slowest real answer
- * rather than in the middle of the distribution.
+ * Measured against production, not guessed. /api/ai/chat answers in ~5.7 s and
+ * /api/ai/plan in ~9.5 s, but the roadmap schema is several times larger: five
+ * samples came back at 27.0, 29.7, 31.6, 35.6 and 40.8 s. At the original 18 s
+ * *every* roadmap request timed out and served placeholder nodes ("Foundations
+ * 1", "Foundations 2", …), so nobody had ever received a generated one; at 40 s
+ * the slowest of those five still did. This is a guard against a hung provider,
+ * so it belongs clear of the slowest real answer rather than inside the spread.
  */
-const AI_TIMEOUT_MS = 40_000;
+const AI_TIMEOUT_MS = 60_000;
 /** Generations per rolling hour, per identity. */
 const AI_REQUESTS_PER_WINDOW = 20;
 /**

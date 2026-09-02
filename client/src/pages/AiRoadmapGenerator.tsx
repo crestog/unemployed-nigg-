@@ -14,11 +14,28 @@ export default function AiRoadmapGenerator() {
   const [hours, setHours] = useState("5");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
     const title = new URLSearchParams(window.location.search).get("title");
     if (title) setTopic(title);
   }, []);
+
+  // Generation is a single pass over a large schema and takes 25–45 seconds
+  // against the live model, which is long enough that a bare spinner reads as a
+  // hung page and gets reloaded. A counting clock is the one part of this that
+  // actually proves the request is still alive: the spinner is a CSS animation
+  // and keeps turning either way. Elapsed time comes from the start timestamp
+  // rather than an incremented counter, so a throttled background tab does not
+  // quietly undercount.
+  useEffect(() => {
+    if (!busy) return;
+    const started = Date.now();
+    const id = window.setInterval(() => {
+      setElapsed(Math.round((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
 
   async function generate() {
     const value = topic.trim();
@@ -31,6 +48,10 @@ export default function AiRoadmapGenerator() {
     }
     setBusy(true);
     setError("");
+    // Reset here rather than inside the timing effect: a state write in an
+    // effect body is an extra render pass, and the run that is starting is the
+    // one that knows the clock should go back to zero.
+    setElapsed(0);
     let roadmap: Awaited<ReturnType<typeof generateAiRoadmap>>;
     try {
       roadmap = await generateAiRoadmap({
@@ -225,6 +246,9 @@ export default function AiRoadmapGenerator() {
               <>
                 <Loader2 className="h-5 w-5 animate-spin" /> Generating your
                 roadmap…
+                {elapsed > 0 && (
+                  <span className="tabular-nums opacity-70">{elapsed}s</span>
+                )}
               </>
             ) : (
               <>
@@ -232,6 +256,12 @@ export default function AiRoadmapGenerator() {
               </>
             )}
           </button>
+          {busy && (
+            <p className="text-center text-xs leading-5 text-[#8b95a4]">
+              Atlas writes the whole roadmap in one pass, which usually takes 25
+              to 45 seconds. Keep this tab open.
+            </p>
+          )}
           {error && (
             <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {error}

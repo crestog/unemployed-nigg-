@@ -2,7 +2,7 @@ interface AiBinding {
   run: (model: string, input: Record<string, unknown>) => Promise<unknown>;
 }
 
-interface Env {
+export interface Env {
   ASSETS: Fetcher;
   ATLAS_DB: D1Database;
   AI?: AiBinding;
@@ -416,22 +416,32 @@ const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const AI_MAX_TOKENS = 2600;
 const AI_TEMPERATURE = 0.2;
 const AI_TIMEOUT_MS = 18_000;
-/** Generations per rolling hour, per identity+IP pair. */
+/** Generations per rolling hour, per identity. */
 const AI_REQUESTS_PER_WINDOW = 20;
+/**
+ * And per client IP, regardless of identity. The per-identity ceiling on its own
+ * is bypassed by simply not keeping the cookie: a script that discards it is
+ * request #1 of a fresh bucket every time, which is exactly the unmetered case
+ * the limit exists to stop. The IP ceiling is the higher of the two because NAT
+ * and CGNAT put many real users behind one address.
+ */
+const AI_REQUESTS_PER_IP_WINDOW = 60;
 const AI_WINDOW_MS = 60 * 60 * 1000;
 
 type QuotaVerdict = { allowed: boolean; retryAfterSeconds: number };
 
 /**
- * D1-backed fixed-window counter keyed on the identity cookie *and* the client
- * IP, so clearing cookies does not reset the budget.
+ * D1-backed fixed-window counter. Two buckets are incremented per request — one
+ * keyed on the identity cookie, one on the client IP alone — and the request is
+ * allowed only if both are under their ceiling, so neither clearing cookies nor
+ * sharing an address defeats the limit.
  *
  * Fails open on a storage error, deliberately: the AI call already carries a
  * hard token cap and an 18 s timeout, so a brief unmetered window is a bounded
  * cost, whereas failing closed would take the feature down on any D1 hiccup.
  * The failure is logged rather than swallowed so it is visible in tail logs.
  */
-async function consumeAiQuota(
+export async function consumeAiQuota(
   env: Env,
   identity: Identity,
   request: Request
@@ -443,15 +453,23 @@ async function consumeAiQuota(
   );
   if (!env.ATLAS_DB) return { allowed: true, retryAfterSeconds };
   const ip = request.headers.get("cf-connecting-ip") || "unknown";
-  const bucketKey = `${windowStartMs}:${identity.id}:${ip}`.slice(0, 200);
-  try {
-    const row = await env.ATLAS_DB.prepare(
+  const bump = (key: string) =>
+    env.ATLAS_DB.prepare(
       "INSERT INTO atlas_ai_usage (bucket_key, window_start, hits) VALUES (?, ?, 1) ON CONFLICT(bucket_key) DO UPDATE SET hits = hits + 1 RETURNING hits"
-    )
-      .bind(bucketKey, windowStartMs)
-      .first<{ hits: number }>();
-    const hits = row?.hits ?? 1;
-    if (hits === 1) {
+    ).bind(key.slice(0, 200), windowStartMs);
+  try {
+    // One round trip for both counters. The `id:` / `ip:` prefixes keep the two
+    // namespaces from colliding in a shared primary key.
+    const counted = await env.ATLAS_DB.batch<{ hits: number }>([
+      bump(`id:${windowStartMs}:${identity.id}`),
+      bump(`ip:${windowStartMs}:${ip}`),
+    ]);
+    // A missing row would mean the RETURNING clause came back empty, which
+    // cannot happen for an upsert; reading it as the first hit of the window is
+    // the permissive answer, consistent with failing open below.
+    const identityHits = counted[0]?.results[0]?.hits ?? 1;
+    const ipHits = counted[1]?.results[0]?.hits ?? 1;
+    if (identityHits === 1 || ipHits === 1) {
       // First hit of a new window: drop counters from windows that can no
       // longer be consulted. Once per hour per caller, so effectively free.
       await env.ATLAS_DB.prepare(
@@ -460,7 +478,12 @@ async function consumeAiQuota(
         .bind(windowStartMs - AI_WINDOW_MS)
         .run();
     }
-    return { allowed: hits <= AI_REQUESTS_PER_WINDOW, retryAfterSeconds };
+    return {
+      allowed:
+        identityHits <= AI_REQUESTS_PER_WINDOW &&
+        ipHits <= AI_REQUESTS_PER_IP_WINDOW,
+      retryAfterSeconds,
+    };
   } catch (error) {
     console.error("atlas: AI quota check failed, allowing request", error);
     return { allowed: true, retryAfterSeconds };

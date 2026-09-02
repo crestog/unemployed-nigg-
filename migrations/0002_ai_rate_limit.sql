@@ -2,10 +2,13 @@
 -- previously unauthenticated *and* unmetered: any caller could spend the
 -- account's inference budget at max_tokens per request, without limit.
 --
--- bucket_key is "<windowStartMs>:<profileId>:<clientIp>", so the window is
--- baked into the key and a new hour starts a new row rather than needing a
--- read-modify-write reset. Counters are pruned by the first request of each
--- new window; window_start is indexed for that DELETE.
+-- bucket_key is "<namespace>:<windowStartMs>:<subject>", so the window is baked
+-- into the key and a new hour starts a new row rather than needing a
+-- read-modify-write reset. The Worker keeps two namespaces — "id:" per identity
+-- cookie and "ip:" per client address — and requires both to be under their
+-- ceiling, because a per-identity limit alone is bypassed by discarding the
+-- cookie. Counters are pruned by the first request of each new window;
+-- window_start is indexed for that DELETE.
 
 CREATE TABLE IF NOT EXISTS atlas_ai_usage (
   bucket_key TEXT PRIMARY KEY,

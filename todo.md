@@ -133,6 +133,6 @@
 
 - [x] Re-verify on production that a malformed `/api/state` body returns 400 and writes nothing, after the fix reached `main`.
 - [x] Diagnose why `/api/ai/roadmap` served placeholder nodes on production: the 18 s ceiling was below the model's real latency for that schema, and `parseAiPayload(null)` returned a truthy `{}`, so the timeout was reported as a malformed provider response.
-- [ ] Confirm on production that `/api/ai/roadmap` now returns `mode: "ai"` rather than the fallback, and record how long it actually takes.
+- [x] Confirm on production that `/api/ai/roadmap` now returns `mode: "ai"` rather than the fallback, and record how long it actually takes. Eleven samples: 27.0, 29.7, 30.3, 31.6, 31.8, 35.6, 37.6, 37.7, 38.1, 40.8, 43.2 s. Every one at or under the 40 s ceiling returned `mode: "ai"`; the two above it fell back, which is what moved the ceiling to 60 s. `rust`, the topic that failed at 40.8 s, now answers in 43.2 s with ten real nodes.
 - [ ] Decide how the monthly data refresh should handle the three browser-only source packages: seed them somewhere the runner can read, or accept that the release is rebuilt by hand and drop the schedule.
 - [ ] Create a preview D1 database so `preview_database_id` stops pointing at production; needs account credentials.

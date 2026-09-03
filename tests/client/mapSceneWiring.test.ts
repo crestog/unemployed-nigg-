@@ -73,7 +73,7 @@ describe("MapLibreWorldScene geometry conditioning", () => {
 describe("MapLibreWorldScene source uploads", () => {
   it("routes every source through one content-keyed upload path", () => {
     const uploads = scene.match(/useGeoJsonSource\(mapRef, styleReady, "[^"]+"/g) ?? [];
-    expect(uploads).toHaveLength(5);
+    expect(uploads).toHaveLength(6);
     expect(scene.match(/sourceSetData\(map,/g) ?? []).toHaveLength(1);
   });
 
@@ -83,5 +83,30 @@ describe("MapLibreWorldScene source uploads", () => {
     const syncEffect = hook.match(/const map = mapRef\.current;[\s\S]*?\]\);/)?.[0] ?? "";
     expect(syncEffect).toMatch(/\}, \[mapRef, ready, signature, sourceId, toFeature\]\);/);
     expect(syncEffect).toMatch(/recordsRef\.current/);
+  });
+});
+
+// The entity layer aggregates by interned position: 11,370 records sit on 366 coordinates, so a
+// marker stands for a *group*, and two things about it are load-bearing rather than cosmetic.
+describe("MapLibreWorldScene entity markers", () => {
+  it("encodes count as area, not as radius", () => {
+    // `weight` is sqrt(count) upstream. Interpolating radius on ["get", "count"] instead would give
+    // a 4,541-record position 4,541x the ink of a single one.
+    const core = scene.match(/id: "atlas-entity-core",[\s\S]*?\n {6}\},/)?.[0] ?? "";
+    expect(core).not.toBe("");
+    expect(core).toMatch(/\["\*", [\d.]+, \["get", "weight"\]\]/);
+    expect(core).not.toMatch(/\["get", "count"\]/);
+  });
+
+  it("draws the approximation ring only where the coordinate is a centroid", () => {
+    // precision 0 is a real city coordinate; 1 and 2 are district and state centroids, where the
+    // marker stands for an area and a bare pin would claim precision the data does not have.
+    const halo = scene.match(/id: "atlas-entity-halo",[\s\S]*?\n {6}\},/)?.[0] ?? "";
+    expect(halo).toMatch(/filter: \[">", \["get", "precision"\], 0\]/);
+  });
+
+  it("hit-tests markers above the geography they sit on", () => {
+    const pick = scene.match(/queryRenderedFeatures\(event\.point\)[\s\S]*?\}\);/)?.[0] ?? "";
+    expect(pick).toMatch(/id === "atlas-entity-core"/);
   });
 });

@@ -18,9 +18,11 @@ import worldTopology from "world-atlas/countries-50m.json";
 import { type SemanticBoundary, type SemanticLocality } from "@/lib/worldSemanticTypes";
 import type { GlobalMvtManifest } from "@/lib/worldMvt";
 import { clamp, tileKeyParts, tileKeysForViewport } from "@/lib/tileMath";
+import { useEntityAtlas } from "@/lib/useEntityAtlas";
 import MapLibreWorldScene, {
   type MapLibreWorldSceneHandle,
 } from "./MapLibreWorldScene";
+import EntityAtlasPanel from "./EntityAtlasPanel";
 import {
   ChevronLeft,
   Copy,
@@ -224,6 +226,27 @@ const safeCountryLabelAnchor = (country: MapFeature): [number, number] | null =>
   }
 };
 const topologyId = (item: MapFeature) => String(item.id ?? "").padStart(3, "0");
+// The label anchor and area of a country depend only on its geometry, and that geometry is the
+// static world-atlas topology loaded once above. Recomputing them per render meant 241 d3-geo
+// passes (geoCentroid + geoContains + geoArea, ~112 ms) on every animation frame of a zoom, all
+// of it discarded by the scene's upload guard. Resolve each country once and keep the result.
+type CountryLabelGeometry = { longitude: number; latitude: number; area: number };
+const countryLabelGeometryCache = new Map<string, CountryLabelGeometry | null>();
+const countryLabelGeometry = (country: MapFeature): CountryLabelGeometry | null => {
+  const key = topologyId(country);
+  const cached = countryLabelGeometryCache.get(key);
+  if (cached !== undefined) return cached;
+  const anchor = key === "010" ? ([0, -82] as [number, number]) : safeCountryLabelAnchor(country);
+  const resolved = anchor
+    ? {
+        longitude: anchor[0],
+        latitude: anchor[1],
+        area: Math.abs(geoArea(country as GeoJSON.Feature)),
+      }
+    : null;
+  countryLabelGeometryCache.set(key, resolved);
+  return resolved;
+};
 const formatNumber = (value: number | null | undefined) =>
   value == null ? "Unavailable" : Math.round(value).toLocaleString();
 const formatDate = (value: string | null | undefined) =>
@@ -845,20 +868,15 @@ export default function WorldMapExplorer() {
         .map(item => item.id)
     );
   }, [nodes, selected]);
-  const countryLabelIds = useMemo(() => {
-    const labels = new Set<string>();
+  // Every country that survives the nodeById filter in countryLayers is in `nodes`, so the old
+  // per-id Set was only ever "all of them, or none". Returning a boolean keeps the identity stable
+  // across frames, which is what stops the countryLayers -> countryLabelLayers cascade from
+  // recomputing on every zoom frame.
+  const countryLabelsEnabled = useMemo(() => {
     const indiaDetailPending =
       indiaInView && mapZoom >= INDIA_ADM1_ZOOM && indiaAdm1Features.length === 0;
-    if (mapZoom > 5.4 && !indiaDetailPending) return labels;
-    [...nodes]
-      .sort((a, b) => {
-        if (a.id === selectedId) return -1;
-        if (b.id === selectedId) return 1;
-        return (b.total ?? -1) - (a.total ?? -1);
-      })
-      .forEach(node => labels.add(node.id));
-    return labels;
-  }, [indiaAdm1Features.length, indiaInView, mapZoom, nodes, selectedId]);
+    return !(mapZoom > 5.4 && !indiaDetailPending);
+  }, [indiaAdm1Features.length, indiaInView, mapZoom]);
   const indiaAdm1Render = useMemo(
     () =>
       indiaAdm1Features.flatMap(boundary => {
@@ -1356,21 +1374,21 @@ export default function WorldMapExplorer() {
         feature: country as GeoJSON.Feature,
         color: palette[index % palette.length],
         visible: !nearbyMode || nearbyIds.has(id),
-        label: id === "010" || countryLabelIds.has(id),
+        label: id === "010" || countryLabelsEnabled,
         selected: selectedId === id,
       }];
     });
-  }, [countryFeatures, countryLabelIds, nearbyIds, nearbyMode, nodeById, selectedId]);
+  }, [countryLabelsEnabled, nearbyIds, nearbyMode, nodeById, selectedId]);
   const countryLabelLayers = useMemo(() => countryLayers.flatMap(item => {
-    const anchor = item.id === "010" ? [0, -82] as [number, number] : safeCountryLabelAnchor(item.feature as MapFeature);
-    return anchor ? [{
+    const geometry = countryLabelGeometry(item.feature as MapFeature);
+    return geometry ? [{
       id: item.id,
       name: item.name,
-      longitude: anchor[0],
-      latitude: anchor[1],
+      longitude: geometry.longitude,
+      latitude: geometry.latitude,
       label: item.label,
       selected: item.selected,
-      area: Math.abs(geoArea(item.feature as GeoJSON.Feature)),
+      area: geometry.area,
     }] : [];
   }), [countryLayers]);
   const adm1Layers = useMemo(() => semanticAdm1.flatMap(item => item.geometry ? [{
@@ -1396,7 +1414,18 @@ export default function WorldMapExplorer() {
     label: indiaLocalityLabelIds.has(item.record.id),
     selected: geoSelection?.kind === "locality" && geoSelection.id === item.record.id,
   })), [geoSelection, indiaLocalityLabelIds, visibleIndiaLocalities]);
-  const onMapPick = (pick: { kind: "country" | "adm1" | "adm2" | "adm3" | "adm4" | "adm5" | "locality"; id: string; feature?: { source?: string; sourceLayer?: string; geometry?: GeoJSON.Geometry; properties?: Record<string, unknown> } }) => {
+  // The startup-ecosystem layer. Fetched on mount of the world view rather than lazily behind a
+  // toggle: the map is the only consumer, and 1.28 MB decoded once is cheaper than a layout shift
+  // when a user turns it on. Selection lives in the hook, not here, because a marker is an
+  // aggregate over a coordinate and has no counterpart in the geographic selection model.
+  const entityAtlas = useEntityAtlas(true);
+  const onMapPick = (pick: { kind: "country" | "adm1" | "adm2" | "adm3" | "adm4" | "adm5" | "locality" | "entity"; id: string; feature?: { source?: string; sourceLayer?: string; geometry?: GeoJSON.Geometry; properties?: Record<string, unknown> } }) => {
+    if (pick.kind === "entity") {
+      // The marker id is the interned position index; everything at that coordinate is listed in
+      // the panel, so the pick selects a position and never a single record.
+      entityAtlas.setSelected(Number(pick.id));
+      return;
+    }
     if (pick.kind === "country") {
       const node = nodeById.get(pick.id);
       if (node) focusNode(node);
@@ -1521,6 +1550,7 @@ export default function WorldMapExplorer() {
           adm1={adm1Layers}
           adm2={adm2Layers}
           localities={localityLayers}
+          entities={entityAtlas.markers}
           onViewChange={onMapViewChange}
           onPick={onMapPick}
           onUnavailable={() => setError("Map renderer unavailable")}
@@ -1598,6 +1628,22 @@ export default function WorldMapExplorer() {
           </div>
         )}
       </div>
+
+      {/*
+        One right-hand column at a time: the geographic inspectors below occupy the same corner at a
+        higher z-index, and the panel's own state survives being unmounted, so hiding it while an
+        inspector is open costs nothing and keeps the two from stacking.
+      */}
+      {!geoSelection && !selected && (
+        <div
+          data-world-overlay
+          className="absolute right-3 top-[112px] z-20 sm:right-4 sm:top-4"
+          onPointerDown={event => event.stopPropagation()}
+          onWheel={event => event.stopPropagation()}
+        >
+          <EntityAtlasPanel state={entityAtlas} onFocus={focusGeoPoint} />
+        </div>
+      )}
 
       <aside
         data-world-overlay

@@ -84,6 +84,16 @@
 /data/world-india-geography.json
   Cache-Control: public, max-age=86400, stale-while-revalidate=604800
 
+# The startup-ecosystem layer. The detail file is the largest single JSON here
+# at 6.3 MB and is fetched lazily, on the first record a visitor opens, so
+# leaving it on the asset layer's must-revalidate default would re-download it
+# every session for the one interaction it serves.
+/data/atlas-entities-india.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/data/atlas-entities-india-detail.json
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
 # The service worker decides what the browser keeps. Caching it would pin a
 # deploy's caching policy in place for as long as the header lasted.
 /sw.js

@@ -137,6 +137,11 @@ temp/
 # Wrangler / miniflare local state
 .wrangler/
 
+# Scratch space for the read-only audit that produced the remediation plan, and
+# the local editor/dev-server launch config. Both are per-machine, not source.
+.audit-tmp/
+.claude/
+
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
 .project-config.json

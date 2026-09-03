@@ -49,8 +49,28 @@ type LocalityRecord = {
   label: boolean;
   selected: boolean;
 };
+/**
+ * One marker per *interned position*, not per record. The entity source resolves 11,370 records to
+ * 366 distinct coordinates, because a state-level scheme lands on its state's centroid — drawing one
+ * marker per record would stack thousands on single pixels and claim precision the data lacks. See
+ * `clusterEntities` in `lib/entityAtlas.ts`.
+ */
+export type EntityMarker = {
+  /** Interned position index, and the id handed back on pick. */
+  id: string;
+  longitude: number;
+  latitude: number;
+  /** Records at this position. Never truncated, so the marker size cannot lie. */
+  count: number;
+  /** Marker radius basis: `sqrt(count)`, clamped. Area then reads as count. */
+  weight: number;
+  /** Best `EntityPrecision` index present here; drives colour, so approximation stays visible. */
+  precision: number;
+  label: string;
+  selected: boolean;
+};
 
-type PickKind = "country" | "adm1" | "adm2" | "adm3" | "adm4" | "adm5" | "locality";
+type PickKind = "country" | "adm1" | "adm2" | "adm3" | "adm4" | "adm5" | "locality" | "entity";
 
 export type MapLibreWorldSceneHandle = {
   setView: (view: ViewState) => void;
@@ -67,6 +87,7 @@ type Props = {
   adm1: BoundaryRecord[];
   adm2: BoundaryRecord[];
   localities: LocalityRecord[];
+  entities?: EntityMarker[];
   globalMvt?: GlobalMvtManifest | null;
   spinEnabled?: boolean;
   onViewChange?: (view: ViewState & { bounds: [[number, number], [number, number]] }) => void;
@@ -75,6 +96,10 @@ type Props = {
 };
 
 const MAP_MAX_ZOOM = 24;
+
+// A stable default: a fresh `[]` in the parameter list would be a new identity every render, and
+// every memo downstream of `entities` keys on it.
+const EMPTY_ENTITIES: EntityMarker[] = [];
 
 function globalLabelSize(zoom: number) {
   return Math.min(22, 9 + zoom * 0.82);
@@ -181,6 +206,22 @@ function asLocalityFeature(item: LocalityRecord): Feature {
   } as Feature;
 }
 
+function asEntityFeature(item: EntityMarker): Feature {
+  return {
+    type: "Feature",
+    id: item.id,
+    geometry: { type: "Point", coordinates: [item.longitude, item.latitude] },
+    properties: {
+      atlasId: item.id,
+      name: item.label,
+      count: item.count,
+      weight: item.weight,
+      precision: item.precision,
+      selected: item.selected,
+    },
+  } as Feature;
+}
+
 // Content signatures for the five GeoJSON sources. See `useGeoJsonSource` for why
 // these exist rather than keying the uploads on the arrays' object identities.
 type FlaggedRecord = { id: string; label: boolean; selected: boolean };
@@ -195,12 +236,17 @@ function countriesSignature(records: CountryRecord[]) {
     .join("|");
 }
 
+function entitiesSignature(records: EntityMarker[]) {
+  return records.map(item => `${item.id}~${item.count}~${item.precision}${+item.selected}`).join("|");
+}
+
 function atlasStyle(input: {
   countries: CountryRecord[];
   countryLabels: CountryLabelRecord[];
   adm1: BoundaryRecord[];
   adm2: BoundaryRecord[];
   localities: LocalityRecord[];
+  entities: EntityMarker[];
 }) {
   return {
     version: 8,
@@ -223,6 +269,7 @@ function atlasStyle(input: {
       "atlas-adm1": { type: "geojson", data: featureCollection(input.adm1.map(asBoundaryFeature) as any) },
       "atlas-adm2": { type: "geojson", data: featureCollection(input.adm2.map(asBoundaryFeature) as any) },
       "atlas-localities": { type: "geojson", data: featureCollection(input.localities.map(asLocalityFeature) as any), maxzoom: 14 },
+      "atlas-entities": { type: "geojson", data: featureCollection(input.entities.map(asEntityFeature) as any) },
     },
     layers: [
       { id: "atlas-background", type: "background", paint: { "background-color": "#020817" } },
@@ -370,6 +417,80 @@ function atlasStyle(input: {
         },
         filter: ["==", ["get", "label"], true],
         paint: { "text-color": "#9fffee", "text-halo-color": "#061423", "text-halo-width": 1.2 },
+      },
+      // Entity markers last, so they sit above every geography layer. Three layers rather than one
+      // because the three things a marker has to say are independent: *where* (the ring, drawn only
+      // for approximate placements so an aggregate never looks like a street address), *how many*
+      // (radius, area-proportional to count), and *which* (the label, once there is room).
+      {
+        id: "atlas-entity-halo",
+        type: "circle",
+        source: "atlas-entities",
+        // precision 0 is `point_city` — a real coordinate, so no ring. 1/2 are district and state
+        // centroids, where the marker stands for an area and must not read as a pin.
+        filter: [">", ["get", "precision"], 0],
+        paint: {
+          "circle-radius": [
+            "interpolate", ["linear"], ["zoom"],
+            1, ["*", 2.6, ["get", "weight"]],
+            4, ["*", 4.0, ["get", "weight"]],
+            8, ["*", 6.2, ["get", "weight"]],
+            14, ["*", 8.4, ["get", "weight"]],
+          ],
+          "circle-color": "transparent",
+          "circle-stroke-color": ["match", ["get", "precision"], 1, "#ffbf69", "#f2825b"],
+          "circle-stroke-width": 1,
+          "circle-stroke-opacity": 0.34,
+        },
+      },
+      {
+        id: "atlas-entity-core",
+        type: "circle",
+        source: "atlas-entities",
+        paint: {
+          // sqrt(count) is baked into `weight` upstream, so radius grows with the square root of
+          // the count and the *area* reads as the count. Linear radius would make a 4,541-record
+          // position 4,541× the ink of a single one.
+          "circle-radius": [
+            "interpolate", ["linear"], ["zoom"],
+            1, ["*", 1.5, ["get", "weight"]],
+            4, ["*", 2.3, ["get", "weight"]],
+            8, ["*", 3.5, ["get", "weight"]],
+            14, ["*", 4.8, ["get", "weight"]],
+          ],
+          "circle-color": ["match", ["get", "precision"], 0, "#45d7c0", 1, "#ffbf69", "#f2825b"],
+          "circle-opacity": 0.66,
+          "circle-stroke-color": ["case", ["boolean", ["get", "selected"], false], "#ffffff", "#061423"],
+          "circle-stroke-width": ["case", ["boolean", ["get", "selected"], false], 2, 0.8],
+          "circle-stroke-opacity": 0.9,
+        },
+      },
+      {
+        id: "atlas-entity-label",
+        type: "symbol",
+        source: "atlas-entities",
+        minzoom: 3.4,
+        layout: {
+          // The count on aggregates, the name on singletons: at a state centroid holding 4,541
+          // records the one useful fact is the number, and one record's name is only readable when
+          // it is the only thing there.
+          "text-field": [
+            "case",
+            [">", ["get", "count"], 1], ["to-string", ["get", "count"]],
+            ["get", "name"],
+          ],
+          "text-font": ["Open Sans Semibold"],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 3.4, 10, 8, 12, 14, 14],
+          "text-offset": [0, 0.1],
+          "text-padding": 2,
+          "text-allow-overlap": false,
+          "text-ignore-placement": false,
+          "text-keep-upright": true,
+          "symbol-avoid-edges": true,
+          // Busiest first, so when placement has to drop labels it drops the quiet positions.
+          "symbol-sort-key": ["-", 1000000000, ["get", "count"]],
+        },
+        paint: { "text-color": "#f4fbff", "text-halo-color": "#061423", "text-halo-width": 1.3 },
       },
     ],
   } as StyleSpecification;
@@ -580,7 +701,7 @@ function addGlobalMvtLayers(map: MapLibreMap, manifest: GlobalMvtManifest) {
 
 
 const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function MapLibreWorldScene(
-  { initialView, countries, countryLabels, adm1, adm2, localities, globalMvt, spinEnabled = true, onViewChange, onPick, onUnavailable },
+  { initialView, countries, countryLabels, adm1, adm2, localities, entities = EMPTY_ENTITIES, globalMvt, spinEnabled = true, onViewChange, onPick, onUnavailable },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -591,11 +712,19 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   const onUnavailableRef = useRef(onUnavailable);
   const spinEnabledRef = useRef(spinEnabled);
   const reducedMotionRef = useRef(false);
+  // The idle-spin loop ends itself whenever spinning is not wanted, so it has to be re-armed from
+  // outside. The map effect publishes its starter here.
+  const startSpinRef = useRef<(() => void) | null>(null);
   const [styleReady, setStyleReady] = useState(false);
   onViewChangeRef.current = onViewChange;
   onPickRef.current = onPick;
   onUnavailableRef.current = onUnavailable;
   spinEnabledRef.current = spinEnabled;
+
+  // Turning spin back on has to wake the loop, because the loop stopped itself when it went off.
+  useEffect(() => {
+    if (spinEnabled) startSpinRef.current?.();
+  }, [spinEnabled]);
 
   useImperativeHandle(ref, () => ({
     setView(view) {
@@ -646,7 +775,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       setWorkerUrl(maplibreWorkerUrl);
       map = new MapLibreMapClass({
         container,
-        style: atlasStyle({ countries, countryLabels, adm1, adm2, localities }),
+        style: atlasStyle({ countries, countryLabels, adm1, adm2, localities, entities }),
         center: initialView?.center ?? [0, 18],
         zoom: initialView?.zoom ?? 1.25,
         bearing: initialView?.bearing ?? 0,
@@ -697,13 +826,18 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         // selected nothing.
         const feature = map.queryRenderedFeatures(event.point).find((candidate: MapGeoJSONFeature) => {
           const id = candidate.layer.id;
-          return id === "atlas-locality-label" || id === "atlas-global-places-label" || id === "atlas-country-fill" || /atlas-global-adm[1-5]-fill$/.test(id) || /^atlas-adm[12]-fill$/.test(id);
+          // `atlas-entity-core` first in intent as well as in paint order: it is the topmost layer,
+          // so queryRenderedFeatures already returns it ahead of the geography underneath, and a
+          // click on a marker must not fall through to the state it happens to sit on.
+          return id === "atlas-entity-core" || id === "atlas-locality-label" || id === "atlas-global-places-label" || id === "atlas-country-fill" || /atlas-global-adm[1-5]-fill$/.test(id) || /^atlas-adm[12]-fill$/.test(id);
         });
         const id = feature?.properties?.atlasId ?? feature?.id;
         if (!feature || id === undefined || id === null) return;
         const layer = feature.layer.id;
         const globalLevel = layer.match(/atlas-global-(adm[1-5])-fill$/)?.[1] as PickKind | undefined;
-        const kind: PickKind = layer.includes("locality") || layer.includes("places")
+        const kind: PickKind = layer === "atlas-entity-core"
+          ? "entity"
+          : layer.includes("locality") || layer.includes("places")
           ? "locality"
           : globalLevel ?? (layer.includes("adm2") ? "adm2" : layer.includes("adm1") ? "adm1" : "country");
         onPickRef.current?.({ kind, id: String(id), feature });
@@ -720,34 +854,53 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       resizeObserver.observe(container);
       const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
       reducedMotionRef.current = reducedMotionQuery.matches;
-      const updateReducedMotion = () => {
-        reducedMotionRef.current = reducedMotionQuery.matches;
-      };
-      reducedMotionQuery.addEventListener?.("change", updateReducedMotion);
       let spinFrame = 0;
       let previousSpinTime = performance.now();
       let spinPausedUntil = performance.now() + 3000;
-      const pauseSpin = () => {
-        spinPausedUntil = performance.now() + 7000;
-      };
-      const spinEvents = ["dragstart", "zoomstart", "rotatestart", "wheel", "mousedown", "touchstart"] as const;
-      spinEvents.forEach(eventName => map.on(eventName, pauseSpin));
+      // Spinning is only wanted while the user has it on, has not asked for reduced motion, and is
+      // still zoomed out far enough for a rotating globe to make sense. When any of those stops
+      // holding, the loop ends instead of idling: an unconditionally re-armed rAF woke the main
+      // thread 60 times a second even with spin off, and every wake re-rendered the tree.
+      const spinShouldRun = () =>
+        spinEnabledRef.current && !reducedMotionRef.current && map.getZoom() <= 3.2;
       const spin = (now: number) => {
+        spinFrame = 0;
         const elapsed = Math.min(80, now - previousSpinTime);
         previousSpinTime = now;
-        if (spinEnabledRef.current && !reducedMotionRef.current && now >= spinPausedUntil && !map.isMoving() && map.getZoom() <= 3.2) {
+        if (!spinShouldRun()) return;
+        if (now >= spinPausedUntil && !map.isMoving()) {
           const center = map.getCenter();
           const longitude = ((((center.lng + elapsed * 0.0022) + 540) % 360) - 180);
           map.setCenter([longitude, center.lat]);
         }
         spinFrame = window.requestAnimationFrame(spin);
       };
-      spinFrame = window.requestAnimationFrame(spin);
+      const startSpin = () => {
+        if (spinFrame || !spinShouldRun()) return;
+        previousSpinTime = performance.now();
+        spinFrame = window.requestAnimationFrame(spin);
+      };
+      startSpinRef.current = startSpin;
+      const updateReducedMotion = () => {
+        reducedMotionRef.current = reducedMotionQuery.matches;
+        startSpin();
+      };
+      reducedMotionQuery.addEventListener?.("change", updateReducedMotion);
+      const pauseSpin = () => {
+        spinPausedUntil = performance.now() + 7000;
+      };
+      const spinEvents = ["dragstart", "zoomstart", "rotatestart", "wheel", "mousedown", "touchstart"] as const;
+      spinEvents.forEach(eventName => map.on(eventName, pauseSpin));
+      // Interaction can end back inside the spin-eligible range, so re-arm once it settles.
+      map.on("moveend", startSpin);
+      startSpin();
 
       return () => {
-        window.cancelAnimationFrame(spinFrame);
+        if (spinFrame) window.cancelAnimationFrame(spinFrame);
+        startSpinRef.current = null;
         reducedMotionQuery.removeEventListener?.("change", updateReducedMotion);
         spinEvents.forEach(eventName => map.off(eventName, pauseSpin));
+        map.off("moveend", startSpin);
         resizeObserver.disconnect();
         setStyleReady(false);
         mapRef.current = null;
@@ -767,12 +920,14 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   const adm1Key = useMemo(() => flagSignature(adm1), [adm1]);
   const adm2Key = useMemo(() => flagSignature(adm2), [adm2]);
   const localitiesKey = useMemo(() => flagSignature(localities), [localities]);
+  const entitiesKey = useMemo(() => entitiesSignature(entities), [entities]);
 
   useGeoJsonSource(mapRef, styleReady, "atlas-countries", countries, countriesKey, asCountryFeature);
   useGeoJsonSource(mapRef, styleReady, "atlas-country-labels", countryLabels, countryLabelsKey, asCountryLabelFeature);
   useGeoJsonSource(mapRef, styleReady, "atlas-adm1", adm1, adm1Key, asBoundaryFeature);
   useGeoJsonSource(mapRef, styleReady, "atlas-adm2", adm2, adm2Key, asBoundaryFeature);
   useGeoJsonSource(mapRef, styleReady, "atlas-localities", localities, localitiesKey, asLocalityFeature);
+  useGeoJsonSource(mapRef, styleReady, "atlas-entities", entities, entitiesKey, asEntityFeature);
 
   return (
     <div className="absolute inset-0 h-full w-full" data-maplibre-world>

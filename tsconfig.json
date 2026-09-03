@@ -9,6 +9,12 @@
     "incremental": true,
     "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",
     "noEmit": true,
+    // Without this, `target` defaults to ES5 and every `[...map.keys()]` in the client is a TS2802
+    // error about `--downlevelIteration` — for code Vite transpiles to esnext and that has always run
+    // correctly in the browser. `lib` here was already `esnext`, so the ES5 default was contradicting
+    // it. ES2022 to match `tsconfig.node.json` and `tsconfig.worker.json`; `noEmit` means this only
+    // ever affects which diagnostics tsc reports, never what ships.
+    "target": "ES2022",
     "module": "ESNext",
     "strict": true,
     "lib": ["esnext", "dom", "dom.iterable"],

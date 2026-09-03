@@ -1710,9 +1710,8 @@ export default function WorldMapExplorer() {
         </div>
         <p className="mt-3 text-sm leading-6 text-[#b4c4d5]">
           Drag to roam. Zoom at the cursor. Country labels give way to
-          precomputed worldwide administrative boundaries at the deepest
-          level available for the country, with source-backed place references
-          rendered as text-only labels when available.
+          administrative boundaries as you go in, down to the deepest level each
+          country publishes. Source-backed places are drawn as text-only labels.
         </p>
         <section className="mt-4 border border-[#294761] bg-[#0d2234]/80 p-3">
           <div className="flex items-center justify-between gap-3 font-mono text-[9px] uppercase tracking-[.12em] text-[#8fe7d8]">

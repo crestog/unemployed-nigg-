@@ -100,8 +100,8 @@ export default function EntityAtlasPanel({ state, onFocus }: Props) {
       <p className="text-[11px] leading-4 text-[#7f95ab]">
         {atlas.counts.points.toLocaleString()} records over{" "}
         {atlas.counts.positions.toLocaleString()} distinct coordinates, plus{" "}
-        {atlas.counts.national.toLocaleString()} pan-India programmes with no coordinate. Each marker
-        is every record at one coordinate.
+        {atlas.counts.national.toLocaleString()} pan-India programmes with no coordinate. One marker
+        covers every record sharing a coordinate, and its area counts them.
       </p>
 
       <label className="relative block">

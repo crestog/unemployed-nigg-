@@ -4,6 +4,11 @@ import type { GeoJSONSource, Map as MapLibreMap, MapGeoJSONFeature, StyleSpecifi
 import type { GlobalMvtManifest } from "@/lib/worldMvt";
 import { globalMvtTileUrl } from "@/lib/worldMvt";
 import { splitGeometryAtAntimeridian } from "@/lib/antimeridian";
+import {
+  SPIN_RESUME_DELAY_MS,
+  SPIN_START_DELAY_MS,
+  planSpinSegment,
+} from "@/lib/globeSpin";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 
@@ -787,6 +792,17 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         cooperativeGestures: false,
       });
       mapRef.current = map;
+      // Opt-in handle for profiling the camera from the console, reachable only
+      // with `atlasdebug=1` in the URL hash. It grants nothing: any script able to
+      // read this global is same-origin and could already walk React's internals
+      // to the same object. The gate is so it does not exist by accident, and so
+      // the name cannot be relied on as an API.
+      if (
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.hash.replace(/^#/, "")).get("atlasdebug") === "1"
+      ) {
+        (window as unknown as { __atlasMap?: unknown }).__atlasMap = map;
+      }
       map.dragPan.enable();
       map.scrollZoom.enable();
       map.touchZoomRotate.enable();
@@ -854,53 +870,62 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       resizeObserver.observe(container);
       const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
       reducedMotionRef.current = reducedMotionQuery.matches;
-      let spinFrame = 0;
-      let previousSpinTime = performance.now();
-      let spinPausedUntil = performance.now() + 3000;
-      // Spinning is only wanted while the user has it on, has not asked for reduced motion, and is
-      // still zoomed out far enough for a rotating globe to make sense. When any of those stops
-      // holding, the loop ends instead of idling: an unconditionally re-armed rAF woke the main
-      // thread 60 times a second even with spin off, and every wake re-rendered the tree.
-      const spinShouldRun = () =>
-        spinEnabledRef.current && !reducedMotionRef.current && map.getZoom() <= 3.2;
-      const spin = (now: number) => {
-        spinFrame = 0;
-        const elapsed = Math.min(80, now - previousSpinTime);
-        previousSpinTime = now;
-        if (!spinShouldRun()) return;
-        if (now >= spinPausedUntil && !map.isMoving()) {
-          const center = map.getCenter();
-          const longitude = ((((center.lng + elapsed * 0.0022) + 540) % 360) - 180);
-          map.setCenter([longitude, center.lat]);
-        }
-        spinFrame = window.requestAnimationFrame(spin);
+      let spinTimer: number | null = null;
+      let spinPausedUntil = performance.now() + SPIN_START_DELAY_MS;
+      // Always go through a timer rather than calling `spinSegment` inline. Two of the
+      // three callers are MapLibre event handlers and `easeTo` fires `movestart`
+      // synchronously, so deferring by a macrotask keeps a segment from ever being
+      // issued from inside the teardown of the one before it.
+      const armSpin = (delayMs = 0) => {
+        if (spinTimer !== null) window.clearTimeout(spinTimer);
+        spinTimer = window.setTimeout(spinSegment, Math.max(0, delayMs));
       };
-      const startSpin = () => {
-        if (spinFrame || !spinShouldRun()) return;
-        previousSpinTime = performance.now();
-        spinFrame = window.requestAnimationFrame(spin);
-      };
-      startSpinRef.current = startSpin;
+      function spinSegment() {
+        spinTimer = null;
+        const plan = planSpinSegment({
+          enabled: spinEnabledRef.current,
+          reducedMotion: reducedMotionRef.current,
+          zoom: map.getZoom(),
+          moving: map.isMoving(),
+          now: performance.now(),
+          pausedUntil: spinPausedUntil,
+          center: map.getCenter().toArray() as [number, number],
+        });
+        // `idle` schedules nothing at all: either the spin is off, or a gesture owns
+        // the camera and its own `moveend` will re-arm us. The old loop parked a frame
+        // callback in both cases and woke 60 times a second to re-learn it.
+        if (plan.kind === "idle") return;
+        if (plan.kind === "wait") return armSpin(plan.delayMs);
+        map.easeTo({
+          center: plan.center,
+          duration: plan.durationMs,
+          easing: progress => progress,
+        });
+      }
+      startSpinRef.current = () => armSpin();
       const updateReducedMotion = () => {
         reducedMotionRef.current = reducedMotionQuery.matches;
-        startSpin();
+        armSpin();
       };
       reducedMotionQuery.addEventListener?.("change", updateReducedMotion);
       const pauseSpin = () => {
-        spinPausedUntil = performance.now() + 7000;
+        spinPausedUntil = performance.now() + SPIN_RESUME_DELAY_MS;
       };
       const spinEvents = ["dragstart", "zoomstart", "rotatestart", "wheel", "mousedown", "touchstart"] as const;
       spinEvents.forEach(eventName => map.on(eventName, pauseSpin));
-      // Interaction can end back inside the spin-eligible range, so re-arm once it settles.
-      map.on("moveend", startSpin);
-      startSpin();
+      // The end of any movement is when to consider the next segment: our own segment
+      // finishing, a segment cut short by a gesture, and a gesture settling back
+      // inside the spin-eligible range all arrive here.
+      const onMoveEnd = () => armSpin();
+      map.on("moveend", onMoveEnd);
+      armSpin();
 
       return () => {
-        if (spinFrame) window.cancelAnimationFrame(spinFrame);
+        if (spinTimer !== null) window.clearTimeout(spinTimer);
         startSpinRef.current = null;
         reducedMotionQuery.removeEventListener?.("change", updateReducedMotion);
         spinEvents.forEach(eventName => map.off(eventName, pauseSpin));
-        map.off("moveend", startSpin);
+        map.off("moveend", onMoveEnd);
         resizeObserver.disconnect();
         setStyleReady(false);
         mapRef.current = null;

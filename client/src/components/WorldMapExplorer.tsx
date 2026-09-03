@@ -19,6 +19,11 @@ import { type SemanticBoundary, type SemanticLocality } from "@/lib/worldSemanti
 import type { GlobalMvtManifest } from "@/lib/worldMvt";
 import { clamp, tileKeyParts, tileKeysForViewport } from "@/lib/tileMath";
 import {
+  BOUNDS_GRID_STEP,
+  INDIA_ADM1_ZOOM,
+  publishedCameraKey,
+} from "@/lib/cameraKey";
+import {
   boundFeatures,
   containingFeatureId,
   parentIdByChildId,
@@ -266,7 +271,6 @@ const formatDate = (value: string | null | undefined) =>
 const shortText = (value: string, max: number) =>
   value.length > max ? `${value.slice(0, max - 1)}…` : value;
 const INDIA_ID = "356";
-const INDIA_ADM1_ZOOM = 2.4;
 const INDIA_ADM2_ZOOM = 6.2;
 const INDIA_LOCALITY_ZOOM = 10.2;
 const GLOBAL_ADM1_MAP_ZOOM = 5;
@@ -536,10 +540,25 @@ export default function WorldMapExplorer() {
 
   const mapViewFrameRef = useRef<number | null>(null);
   const mapViewPendingRef = useRef<typeof mapView>(null);
+  const mapViewKeyRef = useRef<string | null>(null);
   const onMapViewChange = (next: NonNullable<typeof mapView>) => {
     // MapLibre is the sole camera model. Keep the ref hot for viewport-driven
     // fetches and selection restore; React state is throttled below for UI.
     mapViewRef.current = next;
+    // The globe auto-spins whenever it is at rest below zoom 3.2, and `move` fires
+    // once per frame for as long as it does. Publishing each of those into state
+    // re-rendered the whole explorer — the entity panel, the search list, the
+    // legend — at 60 fps against a camera no consumer could resolve that finely,
+    // which is what kept the main thread busy while the map sat idle, and what made
+    // typing into the search box feel like the page had stopped responding. A frame
+    // landing in the same bucket as the last published one is now dropped before it
+    // reaches React: at the 2.2°/s spin rate that is ~4 re-renders a second instead
+    // of 60. See `cameraKey` for which changes count and why. The rAF coalescing
+    // below still stands for the frames that do carry a change, so a fast drag
+    // publishes at most once per frame rather than once per event.
+    const key = publishedCameraKey(next);
+    if (key === mapViewKeyRef.current) return;
+    mapViewKeyRef.current = key;
     mapViewPendingRef.current = next;
     if (mapViewFrameRef.current !== null)
       window.cancelAnimationFrame(mapViewFrameRef.current);
@@ -777,7 +796,7 @@ export default function WorldMapExplorer() {
   // corner, ceil the east/north one) rather than rounding guarantees the snapped
   // box still contains the real one, so no edge feature is ever culled.
   const rawMapBounds = mapView?.bounds ?? null;
-  const boundsGridStep = 8;
+  const boundsGridStep = BOUNDS_GRID_STEP;
   const snappedWest = rawMapBounds ? Math.floor(rawMapBounds[0][0] * boundsGridStep) / boundsGridStep : 0;
   const snappedSouth = rawMapBounds ? Math.floor(rawMapBounds[0][1] * boundsGridStep) / boundsGridStep : 0;
   const snappedEast = rawMapBounds ? Math.ceil(rawMapBounds[1][0] * boundsGridStep) / boundsGridStep : 0;

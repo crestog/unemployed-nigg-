@@ -8,6 +8,7 @@ import {
   SPIN_RESUME_DELAY_MS,
   SPIN_START_DELAY_MS,
   planSpinSegment,
+  spinIneligibility,
 } from "@/lib/globeSpin";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -726,9 +727,11 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   onUnavailableRef.current = onUnavailable;
   spinEnabledRef.current = spinEnabled;
 
-  // Turning spin back on has to wake the loop, because the loop stopped itself when it went off.
+  // Both directions matter. Switching the spin on has to wake the scheduler, because it
+  // stopped itself when it went off; switching it off has to cut the segment already in
+  // flight, because that segment runs for 41 seconds.
   useEffect(() => {
-    if (spinEnabled) startSpinRef.current?.();
+    startSpinRef.current?.();
   }, [spinEnabled]);
 
   useImperativeHandle(ref, () => ({
@@ -792,17 +795,6 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         cooperativeGestures: false,
       });
       mapRef.current = map;
-      // Opt-in handle for profiling the camera from the console, reachable only
-      // with `atlasdebug=1` in the URL hash. It grants nothing: any script able to
-      // read this global is same-origin and could already walk React's internals
-      // to the same object. The gate is so it does not exist by accident, and so
-      // the name cannot be relied on as an API.
-      if (
-        typeof window !== "undefined" &&
-        new URLSearchParams(window.location.hash.replace(/^#/, "")).get("atlasdebug") === "1"
-      ) {
-        (window as unknown as { __atlasMap?: unknown }).__atlasMap = map;
-      }
       map.dragPan.enable();
       map.scrollZoom.enable();
       map.touchZoomRotate.enable();
@@ -871,11 +863,14 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
       reducedMotionRef.current = reducedMotionQuery.matches;
       let spinTimer: number | null = null;
+      let spinEasing = false;
       let spinPausedUntil = performance.now() + SPIN_START_DELAY_MS;
       // Always go through a timer rather than calling `spinSegment` inline. Two of the
       // three callers are MapLibre event handlers and `easeTo` fires `movestart`
       // synchronously, so deferring by a macrotask keeps a segment from ever being
-      // issued from inside the teardown of the one before it.
+      // issued from inside the teardown of the one before it. Cancelling first is the
+      // other half: exactly one timer is ever pending, so no caller can leave a second
+      // one armed behind the first.
       const armSpin = (delayMs = 0) => {
         if (spinTimer !== null) window.clearTimeout(spinTimer);
         spinTimer = window.setTimeout(spinSegment, Math.max(0, delayMs));
@@ -896,16 +891,36 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         // callback in both cases and woke 60 times a second to re-learn it.
         if (plan.kind === "idle") return;
         if (plan.kind === "wait") return armSpin(plan.delayMs);
+        spinEasing = true;
         map.easeTo({
           center: plan.center,
           duration: plan.durationMs,
           easing: progress => progress,
         });
       }
-      startSpinRef.current = () => armSpin();
+      // Switching the spin off, or asking for reduced motion, has to cut the segment
+      // that is already running — it lasts 41 seconds, and leaving it to finish would
+      // keep the globe turning long after the button said it stopped. Only ever our own
+      // segment: a gesture owning the camera clears `spinEasing` through its `moveend`
+      // before it starts, so `map.stop()` here can never interrupt the user.
+      const syncSpin = () => {
+        const ineligible = spinIneligibility({
+          enabled: spinEnabledRef.current,
+          reducedMotion: reducedMotionRef.current,
+          zoom: map.getZoom(),
+        });
+        if (spinEasing && ineligible) {
+          // `stop()` fires `moveend`, which clears the flag and re-runs the plan; that
+          // plan will be `idle` for the same reason, so nothing is left armed.
+          map.stop();
+          return;
+        }
+        armSpin();
+      };
+      startSpinRef.current = syncSpin;
       const updateReducedMotion = () => {
         reducedMotionRef.current = reducedMotionQuery.matches;
-        armSpin();
+        syncSpin();
       };
       reducedMotionQuery.addEventListener?.("change", updateReducedMotion);
       const pauseSpin = () => {
@@ -916,7 +931,10 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       // The end of any movement is when to consider the next segment: our own segment
       // finishing, a segment cut short by a gesture, and a gesture settling back
       // inside the spin-eligible range all arrive here.
-      const onMoveEnd = () => armSpin();
+      const onMoveEnd = () => {
+        spinEasing = false;
+        armSpin();
+      };
       map.on("moveend", onMoveEnd);
       armSpin();
 

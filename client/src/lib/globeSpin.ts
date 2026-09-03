@@ -72,6 +72,24 @@ export type SpinPlan =
   | { kind: "ease"; center: [number, number]; durationMs: number };
 
 /**
+ * Why the spin may not run at all, independent of what the camera is doing.
+ *
+ * Asked separately from `planSpinSegment` because the component has a second question:
+ * whether a segment *already in flight* should be cut short. A 90° segment lasts 41
+ * seconds, so a spin switched off mid-segment would keep turning for most of a minute
+ * under a button that says it stopped. Both callers read this one definition so the
+ * "may it run" answer cannot drift from the "should it start" answer.
+ */
+export function spinIneligibility(
+  state: Pick<SpinState, "enabled" | "reducedMotion" | "zoom">
+): "disabled" | "reduced-motion" | "zoomed-in" | null {
+  if (!state.enabled) return "disabled";
+  if (state.reducedMotion) return "reduced-motion";
+  if (state.zoom > SPIN_MAX_ZOOM) return "zoomed-in";
+  return null;
+}
+
+/**
  * The guards, in the order they have to be asked:
  *
  *  1. Eligibility first — a disabled spin must schedule nothing at all, not a timer
@@ -84,17 +102,18 @@ export type SpinPlan =
  *     `_stopHandlers()` and cut the drag short under the user's finger.
  */
 export function planSpinSegment(state: SpinState): SpinPlan {
-  if (!state.enabled) return { kind: "idle", reason: "disabled" };
-  if (state.reducedMotion) return { kind: "idle", reason: "reduced-motion" };
-  if (state.zoom > SPIN_MAX_ZOOM) return { kind: "idle", reason: "zoomed-in" };
+  const ineligible = spinIneligibility(state);
+  if (ineligible) return { kind: "idle", reason: ineligible };
   const paused = state.pausedUntil - state.now;
   if (paused > 0) return { kind: "wait", delayMs: paused };
   if (state.moving) return { kind: "idle", reason: "camera-busy" };
   const [lng, lat] = state.center;
-  // Eastward, and deliberately unwrapped: MapLibre takes the shortest path to the
-  // target and wraps as it interpolates, so `lng + 90` is read as "90° east of here"
-  // whatever `lng` is. Normalising it first would be the one way to break that —
-  // 170° normalised to −100° is 270° *west*.
+  // Eastward, and left unwrapped. MapLibre reduces both endpoints modulo 360 before
+  // taking the shortest signed difference (`differenceOfAnglesDegrees`), so a target
+  // of 260 and a target of −100 are read identically — the wrap is not a hazard to
+  // guard against, it is simply not consulted. Unwrapped is the arithmetic-free
+  // spelling of "90° east of here", and it is the segment size below, not the
+  // wrapping, that keeps the shortest path pointing the way we mean.
   return {
     kind: "ease",
     center: [lng + SPIN_SEGMENT_DEGREES, lat],

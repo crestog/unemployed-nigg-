@@ -7,6 +7,7 @@ import {
   SPIN_SEGMENT_MS,
   type SpinState,
   planSpinSegment,
+  spinIneligibility,
 } from "../../client/src/lib/globeSpin";
 
 /**
@@ -42,9 +43,10 @@ describe("planSpinSegment", () => {
   });
 
   it("leaves the target longitude unwrapped past 180", () => {
-    // MapLibre eases along the shortest angular path and wraps as it interpolates,
-    // so `170 + 90 = 260` reads as "90° east of 170°". Normalising it to −100 first
-    // would be read as 270° *west* and the globe would visibly reverse.
+    // Not because wrapping would reverse the spin — MapLibre reduces both endpoints
+    // modulo 360 before differencing, so −100 and 260 are read identically. This
+    // pins the simpler thing: the plan is always "current longitude plus one
+    // segment", with no normalisation step to get wrong.
     expect(planSpinSegment(state({ center: [170, 0] }))).toMatchObject({
       kind: "ease",
       center: [260, 0],
@@ -135,5 +137,49 @@ describe("planSpinSegment", () => {
       kind: "wait",
       delayMs: 7_000,
     });
+  });
+});
+
+/**
+ * `spinIneligibility` exists so the component can ask a question `planSpinSegment`
+ * cannot answer: a segment lasts 41 seconds, so switching the spin off has to cut the
+ * one already running rather than merely decline the next. These pin that the two
+ * functions cannot disagree about when the spin may run.
+ */
+describe("spinIneligibility", () => {
+  const eligible = { enabled: true, reducedMotion: false, zoom: 1.25 };
+
+  it("is null when the spin may run, which is what lets a segment finish", () => {
+    expect(spinIneligibility(eligible)).toBeNull();
+  });
+
+  it("names the toggle, the motion preference, and the zoom", () => {
+    expect(spinIneligibility({ ...eligible, enabled: false })).toBe("disabled");
+    expect(spinIneligibility({ ...eligible, reducedMotion: true })).toBe("reduced-motion");
+    expect(spinIneligibility({ ...eligible, zoom: SPIN_MAX_ZOOM + 0.01 })).toBe("zoomed-in");
+  });
+
+  it("agrees with the plan's own idle reason in every ineligible case", () => {
+    // The drift this guards against is a spin that keeps turning after being switched
+    // off because the halt check and the start check disagree about "off".
+    const cases: Partial<SpinState>[] = [
+      { enabled: false },
+      { reducedMotion: true },
+      { zoom: SPIN_MAX_ZOOM + 0.01 },
+    ];
+    for (const override of cases) {
+      const full = state(override);
+      expect(planSpinSegment(full)).toEqual({
+        kind: "idle",
+        reason: spinIneligibility(full),
+      });
+    }
+  });
+
+  it("stays eligible while the camera is busy or paused, so a gesture never halts our ease", () => {
+    // `camera-busy` and `wait` are about timing, not permission. If they read as
+    // ineligible the component would call `map.stop()` mid-gesture.
+    expect(spinIneligibility({ ...eligible })).toBeNull();
+    expect(planSpinSegment(state({ moving: true }))).toMatchObject({ kind: "idle", reason: "camera-busy" });
   });
 });

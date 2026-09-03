@@ -48,7 +48,55 @@ describe("MapLibreWorldScene event wiring", () => {
   });
 });
 
-// The globe consumes GeoJSON through `@maplibre/geojson-vt`, which tiles in planar
+// The idle spin was a `requestAnimationFrame` loop calling `map.setCenter` once a frame.
+// `setCenter` delegates to `jumpTo`, which fires `moveend` *synchronously*, and the loop
+// re-armed from `moveend` as well as from its own rAF while clearing its in-flight handle
+// at the top of the callback — so each frame scheduled two callbacks and overwrote the
+// first handle without cancelling it. Two per frame, then four, then eight: the profile
+// caught a 29,005 ms main-thread block and 3 fps against 60 fps with the spin off. Like
+// the resize recursion above, nothing else in the gate sees it, so the shape of the
+// scheduler is asserted here.
+describe("MapLibreWorldScene spin scheduling", () => {
+  it("never drives the camera from an animation frame", () => {
+    expect(scene).not.toMatch(/requestAnimationFrame/);
+  });
+
+  it("issues the spin's camera animation from exactly one place, and flags it as in flight", () => {
+    // Every arming path funnels into `spinSegment`, so a second `easeTo` inside it is how
+    // a segment starts landing on top of the one already running. The other two `easeTo`
+    // call sites in the file are the imperative zoom/focus handles, which are gestures as
+    // far as the spin is concerned — they must not set `spinEasing`, or `syncSpin` would
+    // call `map.stop()` on the user's own animation.
+    const segment = scene.match(/function spinSegment\(\) \{[\s\S]*?\n {6}\}/)?.[0] ?? "";
+    expect(segment).not.toBe("");
+    expect(segment.match(/map\.easeTo\(/g) ?? []).toHaveLength(1);
+    expect(segment).toMatch(/spinEasing = true;\s*map\.easeTo\(/);
+    expect(scene.match(/spinEasing = true;/g) ?? []).toHaveLength(1);
+  });
+
+  it("cancels the pending timer before arming another, so only one is ever live", () => {
+    const arm = scene.match(/const armSpin = \([\s\S]*?\n {6}\};/)?.[0] ?? "";
+    expect(arm).not.toBe("");
+    expect(arm).toMatch(/if \(spinTimer !== null\) window\.clearTimeout\(spinTimer\);/);
+    expect(arm).toMatch(/spinTimer = window\.setTimeout\(spinSegment,/);
+  });
+
+  it("re-checks the spin on both edges of the toggle, not just when it is switched on", () => {
+    // A segment runs for 41 seconds. `if (spinEnabled)` here left the globe turning
+    // that long after the button said it had stopped.
+    const effect = scene.match(/useEffect\(\(\) => \{\s*startSpinRef\.current\?\.\(\);\s*\}, \[spinEnabled\]\);/);
+    expect(effect).not.toBeNull();
+  });
+
+  it("halts only its own segment, never a gesture", () => {
+    const sync = scene.match(/const syncSpin = \(\) => \{[\s\S]*?\n {6}\};/)?.[0] ?? "";
+    expect(sync).not.toBe("");
+    expect(sync).toMatch(/if \(spinEasing && ineligible\)/);
+    expect(sync).toMatch(/map\.stop\(\)/);
+    expect(scene).toMatch(/spinEasing = false;/);
+  });
+});
+
 // Web Mercator. Three features in world-atlas' countries-50m step straight across
 // the antimeridian, which on a sphere is a short hop and in the plane is a
 // 359.9°-wide edge: Russia's Wrangel Island painted a band across the Arctic (a

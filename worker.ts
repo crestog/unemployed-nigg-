@@ -1322,6 +1322,10 @@ async function packedMvtResponse(
     x,
     y,
   });
+  // Only these two statuses are cacheable, and the distinction is load-bearing: a 200 is the
+  // tile, a 404 means the part indexes positively agree the tile does not exist. Everything else
+  // buildPackedMvtResponse can return (502/503) means "we could not tell", and caching that would
+  // freeze a hole into the map for an hour. Do not add statuses here.
   if (built.status === 200 || built.status === 404)
     ctx.waitUntil(cache.put(cacheKey, built.clone()));
   return stripBodyForHead(built, request.method);
@@ -1335,7 +1339,7 @@ function stripBodyForHead(response: Response, method: string) {
   });
 }
 
-async function buildPackedMvtResponse(
+export async function buildPackedMvtResponse(
   request: Request,
   env: Env,
   tile: {
@@ -1352,6 +1356,18 @@ async function buildPackedMvtResponse(
   const missHeaders = {
     "cache-control": `public, max-age=${TILE_MISS_CACHE_SECONDS}`,
   };
+  // A tile that is genuinely absent is cached as a 404 for an hour; a tile we merely failed to
+  // *reach* must not be. MapLibre paints a 404 as an empty tile and never retries it
+  // (tile_manager: "does not reload errored tiles"), so caching a transient asset-layer failure
+  // turned one upstream blip into a silent, region-shaped hole in the map that persisted for an
+  // hour per colo and then healed by itself — indistinguishable from a data bug. Transient
+  // failures now answer 503 with no-store, which the Cache API declines to store and MapLibre
+  // surfaces as a real error.
+  const transientHeaders = { "cache-control": "no-store" };
+  const transient = (status: number, reason: string) => {
+    console.error(`atlas: tile unavailable (${status}) for ${basePath}: ${reason}`);
+    return new Response(null, { status, headers: transientHeaders });
+  };
   // The current build emits exactly one part per column (verified: zero
   // `<x>.<n>.json` files across all 4,844 shards), and a missing part index is
   // served the SPA shell rather than a 404, so this loop already exits after two
@@ -1365,15 +1381,22 @@ async function buildPackedMvtResponse(
       })
     );
     const contentType = indexResponse.headers.get("content-type") || "";
+    // The asset layer answers an unknown path with the SPA shell, so "not JSON" is how absence
+    // actually presents. A 5xx is the asset layer failing, which is a different thing.
+    if (indexResponse.status >= 500)
+      return transient(503, `part index ${suffix || "0"} returned ${indexResponse.status}`);
     if (!indexResponse.ok || !contentType.includes("json")) {
       if (part === 0)
         return new Response(null, { status: 404, headers: missHeaders });
       break;
     }
-    const index = (await indexResponse.json()) as Record<
-      string,
-      [number, number]
-    >;
+    const index = (await indexResponse
+      .json()
+      .catch(() => null)) as Record<string, [number, number]> | null;
+    // A part index that is present but unparseable is a build fault, not an absent tile. Left
+    // unguarded this threw out of the fetch handler as an opaque 1101.
+    if (!index || typeof index !== "object")
+      return transient(502, `part index ${suffix || "0"} is not parseable JSON`);
     const entry = index[y];
     if (!entry) continue;
     const [offset, length] = entry;
@@ -1383,7 +1406,7 @@ async function buildPackedMvtResponse(
       offset < 0 ||
       length <= 0
     )
-      return new Response(null, { status: 502 });
+      return transient(502, `malformed index entry for y=${y}: ${JSON.stringify(entry)}`);
     const shardResponse = await env.ASSETS.fetch(
       new Request(new URL(`${basePath}${suffix}.bin`, request.url), {
         headers: {
@@ -1392,8 +1415,10 @@ async function buildPackedMvtResponse(
         },
       })
     );
+    // The index just told us this tile exists at this offset, so a failed shard fetch is never
+    // evidence of absence — it is the asset layer being unreachable. Never cache it as a 404.
     if (!shardResponse.ok)
-      return new Response(null, { status: 404, headers: missHeaders });
+      return transient(503, `shard ${suffix || "0"}.bin returned ${shardResponse.status}`);
     const payload = new Uint8Array(await shardResponse.arrayBuffer());
     const ranged =
       shardResponse.status === 206 || payload.byteLength === length;
@@ -1409,7 +1434,10 @@ async function buildPackedMvtResponse(
       );
     }
     if (start + length > payload.byteLength)
-      return new Response(null, { status: 502 });
+      return transient(
+        502,
+        `shard ${suffix || "0"}.bin gave ${payload.byteLength} B, too short for ${length} B at ${start}`
+      );
     const headers = new Headers({
       "content-type": "application/x-protobuf",
       "cache-control": "public, max-age=31536000, immutable",
@@ -1420,6 +1448,8 @@ async function buildPackedMvtResponse(
       headers,
     });
   }
+  // Every part index parsed and none of them listed this y, and the indexes are authoritative
+  // about what the release contains, so this is genuine absence and is safe to cache.
   return new Response(null, { status: 404, headers: missHeaders });
 }
 

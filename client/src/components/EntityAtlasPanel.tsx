@@ -9,34 +9,12 @@
  * silently selecting an empty map.
  */
 
-import { ChevronRight, Filter, Search, X } from "lucide-react";
+import { ArrowRight, ChevronRight, Filter, Search, X } from "lucide-react";
+import { Link } from "wouter";
 
 import type { EntityAtlasState } from "@/lib/useEntityAtlas";
-import type { EntityFacet } from "@/lib/entityAtlas";
-
-/** Mirrors `PRECISIONS` in `scripts/build_entity_atlas.mjs`, in plain words. */
-const PRECISION_TEXT = [
-  "city coordinate",
-  "district centroid",
-  "state centroid",
-  "pan-India",
-  "unplaced",
-];
-
-const PRECISION_COLOR = ["#45d7c0", "#ffbf69", "#f2825b", "#9db2c8", "#526b84"];
-
-const FACET_TITLE: Record<EntityFacet, string> = {
-  type: "Type",
-  owner: "Owner",
-  sector: "Sector",
-  stage: "Stage",
-  support: "Support",
-  state: "State",
-  place: "Place",
-  status: "Status",
-  host: "Host institute",
-  incubatorType: "Incubator type",
-};
+import { FACET_TITLE, PRECISION_COLOR, PRECISION_TEXT } from "@/lib/entityLabels";
+import { EMPTY_QUERY, directoryQueryToParams } from "@/lib/entityDirectory";
 
 /** Enough values to choose from without turning the panel into a scroll of 1,805 sectors. */
 const FACET_VALUE_CAP = 8;
@@ -87,6 +65,11 @@ export default function EntityAtlasPanel({ state, onFocus }: Props) {
       </div>
     ) : null;
 
+  // Carry whatever the reader has already chosen into the list rather than making them pick it a
+  // second time. Serialised by label, so the link survives a data rebuild reassigning the indices.
+  const carried = directoryQueryToParams(atlas, { ...EMPTY_QUERY, text: query, filter }).toString();
+  const directoryHref = carried ? `/ecosystem?${carried}` : "/ecosystem";
+
   return (
     <div className="flex max-h-[min(52dvh,520px)] w-[min(320px,calc(100vw-1.5rem))] min-w-0 flex-col gap-2 overflow-y-auto overflow-x-hidden rounded-xl border border-[#31506d] bg-[#0c1d30]/95 p-3 shadow-2xl shadow-black/30 backdrop-blur sm:max-h-[min(64dvh,560px)]">
       <div className="flex items-baseline justify-between gap-2">
@@ -103,6 +86,19 @@ export default function EntityAtlasPanel({ state, onFocus }: Props) {
         {atlas.counts.national.toLocaleString()} pan-India programmes with no coordinate. One marker
         covers every record sharing a coordinate, and its area counts them.
       </p>
+      {/* The way out of this panel's two hard limits: it caps every facet at eight values and can
+          only reach a record by its marker, so the pan-India programmes above are unreachable here
+          at all. The list takes the current search and filters with it. */}
+      <Link
+        href={directoryHref}
+        className="group flex items-center gap-1.5 rounded-lg border border-[#2b4a66] bg-[#081a2a] px-2 py-1.5 text-[11px] text-[#8fe7d8] hover:border-[#45d7c0] hover:bg-[#0a2135]"
+      >
+        <span className="min-w-0 flex-1">
+          Search, sort and filter all{" "}
+          {(atlas.counts.points + atlas.counts.national).toLocaleString()} records
+        </span>
+        <ArrowRight className="h-3 w-3 shrink-0 text-[#526b84] group-hover:text-[#45d7c0]" />
+      </Link>
 
       <label className="relative block">
         <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#526b84]" />

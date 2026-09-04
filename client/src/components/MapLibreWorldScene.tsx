@@ -477,12 +477,23 @@ function atlasStyle(input: {
         source: "atlas-entities",
         minzoom: 3.4,
         layout: {
-          // The count on aggregates, the name on singletons: at a state centroid holding 4,541
-          // records the one useful fact is the number, and one record's name is only readable when
-          // it is the only thing there.
+          // Aggregates are labelled by the place every record at that coordinate shares, with the
+          // count underneath it — "Bengaluru / 539", not a bare "539". The number alone was the
+          // whole label before, and it named nothing a reader could act on: 272 of the 366 positions
+          // hold more than one record, so almost every marker on the map was an unlabelled integer.
+          // The place is safe to assert because an interned position never spans two place values.
           "text-field": [
             "case",
-            [">", ["get", "count"], 1], ["to-string", ["get", "count"]],
+            [">", ["get", "count"], 1],
+            [
+              "format",
+              ["get", "name"],
+              {},
+              "\n",
+              {},
+              ["to-string", ["get", "count"]],
+              { "font-scale": 0.82, "text-color": "#8fe7d8" },
+            ],
             ["get", "name"],
           ],
           "text-font": ["Open Sans Semibold"],
@@ -492,6 +503,9 @@ function atlasStyle(input: {
           "text-allow-overlap": false,
           "text-ignore-placement": false,
           "text-keep-upright": true,
+          // Aggregate labels are two lines and place names are long, so cap the wrap width rather
+          // than letting one label reserve a band of the map and crowd its neighbours out.
+          "text-max-width": 9,
           "symbol-avoid-edges": true,
           // Busiest first, so when placement has to drop labels it drops the quiet positions.
           "symbol-sort-key": ["-", 1000000000, ["get", "count"]],

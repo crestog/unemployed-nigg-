@@ -157,4 +157,24 @@ describe("MapLibreWorldScene entity markers", () => {
     const pick = scene.match(/queryRenderedFeatures\(event\.point\)[\s\S]*?\}\);/)?.[0] ?? "";
     expect(pick).toMatch(/id === "atlas-entity-core"/);
   });
+
+  it("labels an aggregate with its place name, not with a bare count", () => {
+    // The regression this guards: `text-field` used to resolve to ["to-string", ["get", "count"]]
+    // for every position holding more than one record, which is 272 of 366 — so the map was mostly
+    // unlabelled integers. The place name must be the first section of the label, and the count may
+    // only appear alongside it.
+    const label = scene.match(/id: "atlas-entity-label",[\s\S]*?\n {6}\},/)?.[0] ?? "";
+    expect(label).not.toBe("");
+    const textField = label.match(/"text-field": \[[\s\S]*?\n {10}\],/)?.[0] ?? "";
+    expect(textField).toMatch(/"format"/);
+    // Order has to be compared *inside* the `format` sections. The `case` predicate that selects
+    // them is itself `[">", ["get", "count"], 1]`, so a search over the whole expression always
+    // finds `count` before `name` and the check can never pass, whatever the label really says.
+    const format = textField.match(/"format",[\s\S]*?\n {12}\],/)?.[0] ?? "";
+    expect(format).not.toBe("");
+    expect(format).toContain('["get", "name"]');
+    // The name section must precede the count section, or the count is still what reads as the label.
+    expect(format.indexOf('["get", "name"]')).toBeLessThan(format.indexOf('["get", "count"]'));
+    expect(textField).not.toMatch(/\[">", \["get", "count"\], 1\], \["to-string"/);
+  });
 });

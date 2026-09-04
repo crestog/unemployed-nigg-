@@ -13,6 +13,10 @@ const RoadmapDetail = lazy(() => import("./pages/RoadmapDetail"));
 const RoadmapPlan = lazy(() => import("./pages/RoadmapPlan"));
 const AiRoadmapGenerator = lazy(() => import("./pages/AiRoadmapGenerator"));
 const AiRoadmapResult = lazy(() => import("./pages/AiRoadmapResult"));
+// The India ecosystem corpus as a list. Its own route rather than a tab on the
+// home page: the `directory` tab there browses O*NET occupations, which is a
+// different corpus, and this view needs to be linkable with its filters intact.
+const EcosystemDirectory = lazy(() => import("./pages/EcosystemDirectory"));
 // Mounted on every route but only visible once a comparison is started, so it
 // was pure weight on first paint. Lazy here means it downloads when opened.
 const RoleComparisonOverlay = lazy(
@@ -31,6 +35,7 @@ function Router() {
       }
     >
       <Switch>
+        <Route path={"/ecosystem"} component={EcosystemDirectory} />
         <Route path={"/ai/roadmap/result"} component={AiRoadmapResult} />
         <Route path={"/ai/roadmap"} component={AiRoadmapGenerator} />
         {/* `/roadmaps/plan` used to render AiRoadmapGenerator, which generates a

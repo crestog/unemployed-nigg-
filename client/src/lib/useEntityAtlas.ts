@@ -32,6 +32,7 @@ export type EntityMarkerRecord = {
   count: number;
   weight: number;
   precision: number;
+  /** The record's own name when a position holds one record, else the place every record shares. */
   label: string;
   selected: boolean;
 };
@@ -56,8 +57,10 @@ export function useEntityAtlas(enabled: boolean) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<Record<number, EntityDetail>>({});
-  const detailRef = useRef(detail);
-  detailRef.current = detail;
+  // Which records have been asked for. A set of requests rather than a mirror of `detail`, because a
+  // ref written during render is read before React has committed the value it is mirroring — and it
+  // also collapses two clicks on one record into one fetch.
+  const requested = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     if (!enabled || atlas) return;
@@ -93,9 +96,17 @@ export function useEntityAtlas(enabled: boolean) {
         count: cluster.count,
         weight: markerWeight(cluster.count),
         precision: cluster.precision,
-        // A singleton's own name is the useful label; an aggregate is labelled by its count in the
-        // style, so the name it carries is only a tooltip/fallback.
-        label: atlas && cluster.records.length ? (atlas.names[cluster.records[0]!] ?? "") : "",
+        // A bare count is unreadable on a map: "539" hovering over southern India names nothing a
+        // reader can act on. Every record sharing an interned position also shares one `place` index
+        // — verified across all 366 positions, 0 of which hold two — so the place name is the honest
+        // label for an aggregate, and the count qualifies it rather than replacing it. A position
+        // holding a single record is labelled by that record, which is the most specific truth there.
+        label: !atlas
+          ? ""
+          : cluster.count === 1
+            ? (atlas.names[cluster.records[0]!] ?? "")
+            : (entityLabel(atlas, "place", cluster.records[0]!) ||
+              (atlas.names[cluster.records[0]!] ?? "")),
         selected: cluster.position === selected,
       })),
     [atlas, clusters, selected]
@@ -164,7 +175,8 @@ export function useEntityAtlas(enabled: boolean) {
    * Resolved details are kept per record: reselecting a position must not refetch 6 MB.
    */
   const requestDetail = useCallback((record: number) => {
-    if (detailRef.current[record]) return;
+    if (requested.current.has(record)) return;
+    requested.current.add(record);
     loadEntityDetail()
       .then(raw => {
         setDetail(current =>
@@ -172,6 +184,8 @@ export function useEntityAtlas(enabled: boolean) {
         );
       })
       .catch((cause: unknown) => {
+        // Forget it, so clicking the record again retries rather than staying blank for the session.
+        requested.current.delete(record);
         console.error("atlas: entity detail failed to load", cause);
       });
   }, []);

@@ -334,7 +334,9 @@ function main() {
   );
 
   const rows = parseCsv(readFileSync(csvPath, "utf8"));
-  const header = (rows[0] ?? []).map((name) => name.replace(/^﻿/, "").trim());
+  // `\uFEFF` as an escape, not the literal character: a raw BOM in source is invisible to review and
+  // reads as stray whitespace to every linter, while meaning exactly the same thing here.
+  const header = (rows[0] ?? []).map((name) => name.replace(/^\uFEFF/, "").trim());
   const at = (name) => header.indexOf(name);
   const columns = {
     id: at("record_id"),

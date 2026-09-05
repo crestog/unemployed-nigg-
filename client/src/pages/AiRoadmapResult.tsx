@@ -5,17 +5,10 @@ import CustomRoadmapGraph, {
   type GeneratedRoadmap,
 } from "@/components/CustomRoadmapGraph";
 import AtlasTutorChat from "@/components/AtlasTutorChat";
+import { readJson } from "@/lib/localJson";
 
 const PROGRESS_KEY = "atlas-generated-roadmap-progress";
 const NOTES_KEY = "atlas-generated-roadmap-notes";
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    return JSON.parse(localStorage.getItem(key) || "") as T;
-  } catch {
-    return fallback;
-  }
-}
 
 function isGeneratedRoadmap(value: unknown): value is GeneratedRoadmap {
   if (!value || typeof value !== "object") return false;

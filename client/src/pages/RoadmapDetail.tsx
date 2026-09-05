@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { roadmapCatalog } from "@/data/roadmapCatalog";
+import { readJson } from "@/lib/localJson";
 import RoadmapGraph from "@/components/RoadmapGraph";
 // Both of these were static imports, which put 273 KB gzipped — streamdown and
 // the syntax-highlighting and diagram stack behind it — on the roadmap page
@@ -48,13 +49,6 @@ const notesKey = (slug: string) => `atlas-roadmap-notes:${slug}`;
 const FAVORITES_KEY = "atlas-roadmap-favorites";
 // Shared with the loader so the shape is declared once.
 type TopicRecord = RoadmapTopicRecord;
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    return JSON.parse(localStorage.getItem(key) || "") as T;
-  } catch {
-    return fallback;
-  }
-}
 
 function titleCase(value: string) {
   return value

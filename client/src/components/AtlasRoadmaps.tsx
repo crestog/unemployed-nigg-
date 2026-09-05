@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, BookOpen, Check, Clipboard, ExternalLink, Lightbulb, Map, Route, Search, ShieldCheck, Sparkles, X } from "lucide-react";
 import CareerLab, { type CareerExperiment as LabExperiment, type LabAnchor as CareerLabAnchor } from "./CareerLab";
+import { isRecord, isStringArray, readJson, writeJson } from "@/lib/localJson";
 
 /** Editorial Cartography reminder: this surface separates official records, computed research leads, browser-local evidence, and external handoffs. */
 
@@ -55,16 +56,26 @@ export default function AtlasRoadmaps({ data, context, onReturnToGraph }: { data
   const [query, setQuery] = useState("");
   const [goal, setGoal] = useState<Goal>("role");
   const [selectedId, setSelectedId] = useState(data.occupations[0]?.id ?? "");
-  const [completed, setCompleted] = useState<string[]>([]);
-  const [readiness, setReadiness] = useState<Record<string, EvidenceStatus>>({});
-  const [experiments, setExperiments] = useState<LabExperiment[]>([]);
+  // Read on the first render, not from an effect. The three persist effects
+  // below used to run before the hydrating setStates were applied, so every
+  // mount wrote the empty defaults back over the saved values — and the single
+  // `try` that wrapped all three parses meant one corrupt key reset the other
+  // two as well, then persisted that reset.
+  const [completed, setCompleted] = useState<string[]>(() =>
+    readJson<string[]>(PROGRESS_KEY, [], isStringArray)
+  );
+  const [readiness, setReadiness] = useState<Record<string, EvidenceStatus>>(() =>
+    readJson<Record<string, EvidenceStatus>>(READINESS_KEY, {}, isRecord)
+  );
+  const [experiments, setExperiments] = useState<LabExperiment[]>(() =>
+    readJson<LabExperiment[]>(LAB_KEY, [], Array.isArray)
+  );
   const [copied, setCopied] = useState(false);
   const [industryRouteOpen, setIndustryRouteOpen] = useState(context?.kind === "industry");
 
-  useEffect(() => { try { setCompleted(JSON.parse(window.localStorage.getItem(PROGRESS_KEY) ?? "[]")); setReadiness(JSON.parse(window.localStorage.getItem(READINESS_KEY) ?? "{}")); setExperiments(JSON.parse(window.localStorage.getItem(LAB_KEY) ?? "[]")); } catch { setCompleted([]); setReadiness({}); setExperiments([]); } }, []);
-  useEffect(() => { window.localStorage.setItem(PROGRESS_KEY, JSON.stringify(completed)); }, [completed]);
-  useEffect(() => { window.localStorage.setItem(READINESS_KEY, JSON.stringify(readiness)); }, [readiness]);
-  useEffect(() => { window.localStorage.setItem(LAB_KEY, JSON.stringify(experiments)); }, [experiments]);
+  useEffect(() => { writeJson(PROGRESS_KEY, completed); }, [completed]);
+  useEffect(() => { writeJson(READINESS_KEY, readiness); }, [readiness]);
+  useEffect(() => { writeJson(LAB_KEY, experiments); }, [experiments]);
   useEffect(() => { setIndustryRouteOpen(context?.kind === "industry"); if (context?.occupationId && data.occupations.some((item) => item.id === context.occupationId)) setSelectedId(context.occupationId); }, [context, data.occupations]);
 
   const selected = data.occupations.find((item) => item.id === selectedId) ?? data.occupations[0];

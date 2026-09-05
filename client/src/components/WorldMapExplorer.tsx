@@ -437,10 +437,21 @@ export default function WorldMapExplorer() {
   useEffect(() => {
     // `{ cache: "no-store" }` used to be set here, which forced a full download
     // of what was then an 8.27 MB manifest on every single load and defeated the
-    // Worker's own `max-age`. The `?v=` release stamp already busts the cache
-    // when the data changes, so the browser cache is allowed to do its job.
+    // Worker's own `max-age`. The `?v=` stamp busts the cache instead, so the
+    // browser cache is allowed to do its job.
+    //
+    // The stamp is the manifest's own `releaseId`, and it has to stay that way.
+    // It used to read `20260824-global-deep` — a hand-typed token that resembled
+    // the release id (`world-global-deep-y-corrected-20260824`) without being it,
+    // so nothing tied it to the data and nothing would have flagged it going
+    // stale. That matters because this manifest is what names the release
+    // directory every tile URL is built from: hold a stale copy and every tile
+    // request points into a release that may no longer be deployed. Keeping the
+    // stamp equal to the release id makes a rebuild change this URL, which is
+    // what guarantees the new manifest is fetched rather than revalidated later.
+    // `tests/client/manifestCaching.test.ts` fails if the two drift apart.
     const controller = new AbortController();
-    fetch("/data/world-mvt/manifest.json?v=20260824-global-deep", {
+    fetch("/data/world-mvt/manifest.json?v=world-global-deep-y-corrected-20260824", {
       signal: controller.signal,
     })
       .then(response => response.ok ? response.json() as Promise<GlobalMvtManifest> : null)

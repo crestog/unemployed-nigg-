@@ -44,9 +44,21 @@
 /data/manifest.json
   Cache-Control: public, max-age=300, must-revalidate
 
+# The world manifest is the one exception to the exception. Its fetch carries
+# `?v=<releaseId>` (WorldMapExplorer.tsx), so a rebuild that changes the release
+# changes this URL and the new manifest is fetched outright — this header is not
+# what makes a release visible. What it still has to cover is a regenerate that
+# keeps the same release id, hence a day of hard freshness and a week of serving
+# stale while revalidating behind it, matching every other `/data` release file
+# below. At 300s with `must-revalidate` it was instead a blocking conditional
+# request on the critical path: no tile URL can be built until the manifest
+# lands, and a revalidation to Singapore measured ~130ms of round trip for a
+# 3.8 KB body that had not changed since August.
 /data/world-mvt/manifest.json
-  Cache-Control: public, max-age=300, must-revalidate
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
 
+# No `?v=` stamp on this one (WorldMapExplorer.tsx fetches it bare), so its URL
+# does not move when the India release does and it keeps the short window.
 /data/india-tiles/manifest.json
   Cache-Control: public, max-age=300, must-revalidate
 

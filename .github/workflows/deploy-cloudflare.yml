@@ -10,7 +10,11 @@ permissions:
 
 concurrency:
   group: cloudflare-production
-  cancel-in-progress: true
+  # Not cancel-in-progress. The migration step below talks to production D1, and
+  # killing wrangler between applying a migration and recording it in
+  # d1_migrations leaves the database in a state the next run tries to re-apply.
+  # Two quick pushes queue instead, which costs seconds.
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -25,44 +29,56 @@ jobs:
         run: |
           if [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.repository_owner }}" == "crestog" ]]; then
+            # A push to the deploying repository that cannot deploy is a failure,
+            # not a skip. Every step here used to carry `if: ready == 'true'`, so a
+            # rotated or expired token turned the whole job into a green no-op:
+            # main advanced, the run showed a tick, and the live site stayed on an
+            # older commit with nothing anywhere saying so.
+            echo "::error::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is missing or expired. Nothing was deployed; the live site is still serving the previous commit."
+            exit 1
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Cloudflare deployment skipped: add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in repository Actions secrets."
+            echo "Cloudflare deployment skipped: this fork has no CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID. The verification steps below still run."
           fi
 
+      # Verification is not gated on the deployment secrets. It needs none of
+      # them, and its result is worth having on a fork and on a pull request.
       - name: Check out repository
-        if: steps.gate.outputs.ready == 'true'
         uses: actions/checkout@v4
 
       - name: Set up pnpm
-        if: steps.gate.outputs.ready == 'true'
         uses: pnpm/action-setup@v4
 
       - name: Set up Node.js
-        if: steps.gate.outputs.ready == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
-        if: steps.gate.outputs.ready == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        if: steps.gate.outputs.ready == 'true'
         run: pnpm check
 
       - name: Lint
-        if: steps.gate.outputs.ready == 'true'
         run: pnpm lint
 
       - name: Test
-        if: steps.gate.outputs.ready == 'true'
         run: pnpm test
 
+      # The data release is committed, so it can be broken by a hand edit or a bad
+      # merge without any build running. This is the only check that reads it.
+      - name: Check data release integrity
+        run: pnpm data:validate
+
       - name: Build static assets
-        if: steps.gate.outputs.ready == 'true'
         run: pnpm build
 
       # Migrations run only after a green build. Applying them first meant a

@@ -84,28 +84,14 @@ jobs:
       - name: Build and validate compact release
         if: steps.download.outputs.complete == 'true'
         run: python scripts/build_real_data.py
+      # Runs unconditionally, unlike everything around it. The assertions this
+      # replaces lived in an inline heredoc gated on `complete == 'true'`, which
+      # needs all six source packages; three are not machine-fetchable and
+      # data/raw is gitignored, so on a clean runner that gate has never once
+      # executed. Checking the committed release on every run is the only way this
+      # job says anything at all about the data it is responsible for.
       - name: Check release integrity
-        if: steps.download.outputs.complete == 'true'
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          manifest = json.loads(Path("client/public/data/manifest.json").read_text())
-          counts = manifest["counts"]
-          assert manifest["mode"] == "real-source-release"
-          assert manifest["integrity"]["syntheticRecords"] == 0
-          assert counts["occupations"] > 900
-          assert counts["taskStatementCount"] > 10000
-          # The four assertions above all read O*NET-derived numbers, so a release
-          # that silently lost the BLS wage/projection joins or the ISCO taxonomy
-          # used to pass this gate looking healthy. These cover the rest.
-          assert counts["occupationsWithBls"] > 900, counts["occupationsWithBls"]
-          assert counts["occupationsWithBlsProjections"] > 900, counts["occupationsWithBlsProjections"]
-          assert counts["isco"] > 500, counts["isco"]
-          assert counts["naics"] > 2000, counts["naics"]
-          assert counts["isic"] > 800, counts["isic"]
-          print("validated", manifest["releaseId"], counts)
-          PY
+        run: python scripts/validate_release.py
 
       - name: Commit updated release files
         id: commit

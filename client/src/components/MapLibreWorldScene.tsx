@@ -10,6 +10,7 @@ import {
   planSpinSegment,
   spinIneligibility,
 } from "@/lib/globeSpin";
+import { FIT_BOUNDS_ZOOM_HEADROOM, focusZoom } from "@/lib/globeZoom";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 
@@ -727,6 +728,8 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const baseZoomRef = useRef(1.25);
+  // The latitude `baseZoomRef` was captured at. Zoom alone does not fix the scale on a globe.
+  const baseLatitudeRef = useRef(18);
   const onViewChangeRef = useRef(onViewChange);
   const onPickRef = useRef(onPick);
   const onUnavailableRef = useRef(onUnavailable);
@@ -768,7 +771,15 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
     focusCenter(center, zoomFactor) {
       const map = mapRef.current;
       if (!map) return;
-      map.easeTo({ center, zoom: baseZoomRef.current + Math.log2(Math.max(1, zoomFactor)), duration: 460, essential: true });
+      const zoom = focusZoom({
+        baseZoom: baseZoomRef.current,
+        baseLatitude: baseLatitudeRef.current,
+        latitude: center[1],
+        zoomFactor,
+        minZoom: map.getMinZoom(),
+        maxZoom: map.getMaxZoom(),
+      });
+      map.easeTo({ center, zoom, duration: 460, essential: true });
     },
     focusFeature(feature, zoomFactor) {
       const map = mapRef.current;
@@ -784,7 +795,18 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       };
       visit((feature.geometry as any).coordinates);
       if (!bounds.isEmpty()) {
-        map.fitBounds(bounds, { padding: 120, maxZoom: baseZoomRef.current + Math.log2(Math.max(1, zoomFactor)) + 1.4, duration: 460, essential: true });
+        // `fitBounds` itself is latitude-correct: it fits the projected geometry. The cap is not,
+        // so without the same term it stops binding at high latitude and lets the fit run free.
+        const maxZoom = focusZoom({
+          baseZoom: baseZoomRef.current,
+          baseLatitude: baseLatitudeRef.current,
+          latitude: bounds.getCenter().lat,
+          zoomFactor,
+          extraZoom: FIT_BOUNDS_ZOOM_HEADROOM,
+          minZoom: map.getMinZoom(),
+          maxZoom: map.getMaxZoom(),
+        });
+        map.fitBounds(bounds, { padding: 120, maxZoom, duration: 460, essential: true });
       }
     },
   }), []);
@@ -829,6 +851,7 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
         ensureGlobeProjection(map);
         if (initialView) map.jumpTo(initialView);
         baseZoomRef.current = initialView?.zoom ?? map.getZoom();
+        baseLatitudeRef.current = initialView?.center?.[1] ?? map.getCenter().lat;
         setStyleReady(true);
         onViewChangeRef.current?.(toView(map));
       });

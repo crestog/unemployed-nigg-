@@ -11,10 +11,20 @@ build_real_data.py fail later with a bare list of keys.
 
 Anything already sitting in data/raw is left alone, so seeding the manual files
 once is enough for a subsequent run to get all the way through.
+
+Exit codes, because refresh-data.yml has to tell two different "incomplete"
+outcomes apart and only one of them is a fault:
+
+  0  all six packages are in data/raw; build_real_data.py can run.
+  3  every fetchable package was obtained and the only thing missing is one a
+     human has to place. Requires --tolerate-unseeded; without it this is a 1,
+     which is what a developer running the script by hand wants.
+  1  something is wrong: a pinned URL stopped serving, or the network failed.
 """
 
 from __future__ import annotations
 
+import argparse
 import time
 import urllib.error
 from pathlib import Path
@@ -89,6 +99,26 @@ def download(name: str, url: str) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Fetch the public source packages build_real_data.py reads.",
+        epilog=(
+            "Exit codes: 0 all six present; 3 fetchable ones obtained but an "
+            "operator-supplied one is unseeded (only with --tolerate-unseeded); "
+            "1 a pinned URL or the network failed."
+        ),
+    )
+    parser.add_argument(
+        "--tolerate-unseeded",
+        action="store_true",
+        help=(
+            "exit 3 rather than 1 when the only missing packages are the three a "
+            "human has to download in a browser. Used by the monthly refresh, so "
+            "an unseeded runner is a clean stop instead of a red failure, while a "
+            "pinned URL that stopped serving still fails."
+        ),
+    )
+    arguments = parser.parse_args()
+
     print(f"source packages -> {RAW}")
     for name, url in DOWNLOADS.items():
         existing = RAW / name
@@ -97,7 +127,12 @@ def main() -> None:
             continue
         download(name, url)
 
-    missing = [name for name in (*DOWNLOADS, *SUPPLIED) if not (RAW / name).exists()]
+    # Split rather than combined: which set a missing file belongs to is the
+    # difference between "nobody has seeded this runner yet" and "a URL we pinned
+    # stopped serving", and only the second is a fault.
+    missing_fetchable = [name for name in DOWNLOADS if not (RAW / name).exists()]
+    missing_supplied = [name for name in SUPPLIED if not (RAW / name).exists()]
+    missing = [*missing_fetchable, *missing_supplied]
     if not missing:
         print("all six source packages are present")
         return
@@ -114,7 +149,14 @@ def main() -> None:
         else:
             lines += [f"  {name}", f"    download failed: {DOWNLOADS[name]}", ""]
     lines += [f"Place them in {RAW} and run this script again.", ""]
-    raise SystemExit("\n".join(lines))
+    message = "\n".join(lines)
+
+    if arguments.tolerate_unseeded and not missing_fetchable:
+        # Everything a runner can legitimately obtain was obtained, which is the
+        # part worth checking monthly: these URLs are pinned and do rot.
+        print(message)
+        raise SystemExit(3)
+    raise SystemExit(message)
 
 
 if __name__ == "__main__":

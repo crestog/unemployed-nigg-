@@ -11,11 +11,24 @@ name: Refresh real data release
 # that grows the repository every time it lands.
 #
 # Three of the six source packages cannot be fetched by a runner: the BLS serves
-# an "Access Denied" page to automated retrieval, and the ILO's ISCO-08 workbook
-# has no stable published URL. `data/raw/` is gitignored, so on a clean runner
-# they are simply absent and this job stops at the download step with a message
-# naming them. That is the honest outcome, not a bug to paper over — until those
-# three are seeded, a scheduled run cannot produce a complete release.
+# an "Access Denied" page to automated retrieval — their stated usage policy
+# prohibits bot activity, so this does not try to work around it — and the ILO's
+# ISCO-08 workbook has no stable published URL. `data/raw/` is gitignored, so on a
+# clean runner those three are simply absent and no complete release can be built.
+#
+# That precondition used to fail the job, which meant a red run and a failure
+# notification every month for a documented, operator-blocked reason — the kind of
+# alarm people learn to ignore, and it would have hidden the month the job broke
+# for a real reason. So the download step now separates the two outcomes:
+#
+#   - a pinned URL that stopped serving, or a network failure, still fails red;
+#   - the three unseeded packages stop the job cleanly, green, with a run summary
+#     naming exactly which files to place and where.
+#
+# The monthly run therefore still earns its keep with the three seeded or not: it
+# proves the O*NET, Census NAICS and UNSD ISIC URLs this repo pins are still
+# serving. Seed the other three somewhere the runner can read and the same job
+# starts producing pull requests with no change here.
 
 on:
   workflow_dispatch:
@@ -40,21 +53,39 @@ jobs:
         run: python -m pip install --disable-pip-version-check openpyxl
       - name: Download official source packages
         id: download
-        run: python scripts/download_real_data.py
-      - name: Explain a missing source in the run summary
-        if: failure() && steps.download.outcome == 'failure'
+        run: |
+          set -uo pipefail
+          # Exit 3 is the script's "everything fetchable was fetched, but a
+          # human-supplied package is unseeded" signal. Anything else non-zero is
+          # a real failure and is left to fail the step.
+          status=0
+          python scripts/download_real_data.py --tolerate-unseeded || status=$?
+          case "$status" in
+            0) echo "complete=true" >> "$GITHUB_OUTPUT" ;;
+            3) echo "complete=false" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+      - name: Explain an unseeded source package in the run summary
+        if: steps.download.outputs.complete == 'false'
         run: |
           {
-            echo "### Source packages are missing"
+            echo "### No release was built: a source package is unseeded"
             echo
-            echo "Three of the six are not machine-fetchable — the BLS blocks automated"
-            echo "retrieval and the ILO's ISCO-08 workbook has no stable URL — and"
-            echo '`data/raw/` is gitignored, so a clean runner starts with none of them.'
-            echo "See the download step's log for the exact filenames and source pages."
+            echo "The three machine-fetchable packages (O\*NET, Census NAICS, UNSD ISIC)"
+            echo "were downloaded, so the URLs this repo pins are still serving. The other"
+            echo "three are not fetchable — the BLS blocks automated retrieval and the"
+            echo 'ILO workbook has no stable URL — and `data/raw/` is gitignored, so a'
+            echo "clean runner starts without them."
+            echo
+            echo "The download step's log names each missing file, what it is, and the page"
+            echo "to take it from. Seed those three where the runner can read them and this"
+            echo "job will start proposing refreshes on its own."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Build and validate compact release
+        if: steps.download.outputs.complete == 'true'
         run: python scripts/build_real_data.py
       - name: Check release integrity
+        if: steps.download.outputs.complete == 'true'
         run: |
           python - <<'PY'
           import json
@@ -78,6 +109,7 @@ jobs:
 
       - name: Commit updated release files
         id: commit
+        if: steps.download.outputs.complete == 'true'
         run: |
           set -euo pipefail
           git config user.name "atlas-data-refresh"

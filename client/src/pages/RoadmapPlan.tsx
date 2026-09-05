@@ -147,7 +147,10 @@ export default function RoadmapPlan() {
     const plan = {
       goal,
       level,
-      hours,
+      // `hours` is <select> state, so it is a string. `bodyNumber` in worker.ts
+      // rejects a non-number rather than coercing it, so posting the raw value
+      // was a guaranteed 400 on every plan save.
+      hours: Number(hours),
       pace,
       roadmapSlug: result.roadmapSlug || selectedRoadmap.slug,
       topicIds,

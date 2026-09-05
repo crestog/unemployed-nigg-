@@ -16,7 +16,37 @@ export type AtlasSnapshot = {
   plans: Array<Record<string, unknown>>;
 };
 
-type AtlasAction = Record<string, unknown>;
+// Mirrors the five cases `parseStateAction` accepts in worker.ts. This was
+// `Record<string, unknown>`, which is the reason a plan could be posted with
+// `hours` as a string: there was no compile-time contract between the callers
+// and the server's validator, so every shape mismatch became a runtime 400 —
+// and a 400 used to wedge the outbox permanently (see flushAtlasStateOutbox).
+export type AtlasAction =
+  | { action: "snapshot" }
+  | { action: "favorite"; roadmapSlug: string; saved: boolean }
+  | {
+      action: "progress";
+      roadmapSlug: string;
+      topicId: string;
+      completed: boolean;
+    }
+  | { action: "note"; roadmapSlug: string; topicId: string; note: string }
+  | {
+      action: "plan";
+      roadmapSlug: string;
+      goal: string;
+      level: string;
+      // Not a string. `bodyNumber` in worker.ts rejects a non-number outright
+      // rather than coercing it, so `"5"` is a 400, not a five.
+      hours: number;
+      pace: string;
+      topicIds: string[];
+      // Accepted and ignored by the server; kept so the local plan record can
+      // be spread into this call without an excess-property error.
+      createdAt?: string;
+      mode?: string;
+    };
+
 type QueuedStateAction = { actionId: string; action: AtlasAction };
 
 export type AiPlanInput = {
@@ -144,7 +174,32 @@ function enqueueStateAction(action: AtlasAction) {
 // contact. The client no longer names the profile it is acting on: sending it as
 // `?profile=` / `x-atlas-profile` let any caller address anyone else's state.
 // `credentials` is spelled out because the whole mechanism depends on it.
-async function postStateAction(item: QueuedStateAction) {
+/**
+ * Why this is not a boolean: `postStateAction` used to answer `null` for both a
+ * thrown fetch and any non-OK status, and the drain loop below treated that one
+ * value as "stop". A permanently-rejected action therefore sat at the head of
+ * the queue forever, blocking every later favorite, tick and note, with nothing
+ * logged and the optimistic UI still showing success.
+ */
+type StateActionOutcome =
+  | { kind: "ok"; snapshot: AtlasSnapshot }
+  | { kind: "retry" }
+  | { kind: "drop"; status: number };
+
+/**
+ * 400 and 422 are the only statuses that mean "this body will never be
+ * accepted" — on this route a 400 is exactly `parseStateAction` returning null.
+ * Everything else has to be retried: a 403 may be a Cloudflare challenge, a 429
+ * is backpressure, 5xx is the server's problem, and a thrown fetch is offline.
+ * Dropping those would trade a stuck queue for silently discarded user data.
+ */
+export function isPermanentStateRejection(status: number): boolean {
+  return status === 400 || status === 422;
+}
+
+async function postStateAction(
+  item: QueuedStateAction
+): Promise<StateActionOutcome> {
   try {
     const response = await fetch("/api/state", {
       method: "POST",
@@ -152,10 +207,16 @@ async function postStateAction(item: QueuedStateAction) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...item.action, actionId: item.actionId }),
     });
-    if (!response.ok) return null;
-    return (await response.json()) as AtlasSnapshot;
+    if (!response.ok) {
+      return isPermanentStateRejection(response.status)
+        ? { kind: "drop", status: response.status }
+        : { kind: "retry" };
+    }
+    return { kind: "ok", snapshot: (await response.json()) as AtlasSnapshot };
   } catch {
-    return null;
+    // Offline, DNS, or a malformed body on an OK response. All retryable: the
+    // server dedupes on `actionId`, so replaying one is free.
+    return { kind: "retry" };
   }
 }
 
@@ -166,9 +227,18 @@ export async function flushAtlasStateOutbox() {
     const items = readOutbox();
     let latest: AtlasSnapshot | null = null;
     while (items.length) {
-      const snapshot = await postStateAction(items[0]);
-      if (!snapshot) break;
-      latest = snapshot;
+      const outcome = await postStateAction(items[0]);
+      // Retry keeps the head in place so the action survives a reload. Drop
+      // shifts it so one bad action cannot wedge the queue behind it.
+      if (outcome.kind === "retry") break;
+      if (outcome.kind === "drop") {
+        console.error("atlas: server rejected a queued state action", {
+          status: outcome.status,
+          action: items[0].action.action,
+        });
+      } else {
+        latest = outcome.snapshot;
+      }
       items.shift();
       writeOutbox(items);
     }

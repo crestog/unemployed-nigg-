@@ -1,0 +1,40 @@
+# Files that live in this directory because tooling puts them here, but that are
+# not public. Wrangler reads this at the root of the uploaded asset directory
+# (`dist/public`, per `wrangler.jsonc`) and skips anything it matches; the syntax
+# is `.gitignore`'s. It takes effect at upload, not at build — both files below
+# are still copied into `dist/public`, they just stop being deployed.
+#
+# `data/world-mvt/<release>/manifest.json` is the exhaustive tile inventory the
+# offline build emits: 8,672,388 bytes naming all 459,493 tile keys. It is the
+# *input* `scripts/build-world-manifest.mjs` reads to derive the 13 KB
+# `data/world-mvt/manifest.json` the client actually fetches. Nothing requests
+# the big one — the client reads the derived manifest, and tiles come out of
+# `packed/**` through the Worker — but everything under `client/public/` is
+# deployed verbatim, so it was being served anyway: 8.27 MiB behind the
+# `/data/world-mvt/:release/*` rule in `_headers`, which grants it
+# `max-age=31536000, immutable`, one path segment from the manifest that is real.
+#
+# Wildcarded rather than named, so a release bump cannot silently start shipping
+# it again. `*` does not cross `/` in this syntax, which is what keeps the pattern
+# off the derived `data/world-mvt/manifest.json` one segment up, and off all 9,688
+# `packed/**` shards and part indexes the Worker serves tiles from via
+# `env.ASSETS.fetch` (worker.ts:1378, :1410).
+data/world-mvt/*/manifest.json
+
+# `__manus__/debug-collector.js` is the 25,989-byte browser log collector that
+# `vitePluginManusDebugCollector` injects — and that plugin only runs when
+# `command === "serve"` (vite.config.ts:224), so no production page has ever
+# referenced it. Its POST target `/__manus__/logs` is dev-server middleware and
+# does not exist in the Worker either. It was still fetchable on the public
+# origin. The dev server reads `client/public/` directly rather than the uploaded
+# asset manifest, so excluding it here does not affect `vite dev`.
+__manus__/
+
+# Deliberately says nothing about `_headers`. That file is consumed as asset
+# metadata and is already absent from the served manifest, so it needs no rule
+# here, and naming it would risk excluding it from the metadata pass as well.
+#
+# `tests/client/assetsIgnore.test.ts` walks the real `client/public` tree and
+# checks that these two patterns exclude exactly what is described above and
+# nothing else. What it cannot check is that Wrangler's parser agrees with its
+# own; that is what a 404 on the deployed URL proves.

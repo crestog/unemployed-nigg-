@@ -890,7 +890,14 @@ const MapLibreWorldScene = forwardRef<MapLibreWorldSceneHandle, Props>(function 
       map.on("error", event => {
         if (event.error && /WebGL|style|source|glyph/i.test(event.error.message)) onUnavailableRef.current?.();
       });
-    } catch {
+    } catch (error) {
+      // Only a synchronous throw from the Map constructor reaches this — style
+      // validation is deferred inside loadJSON, so a bad layer or source never
+      // lands here. In practice that means WebGL2 being unavailable, and
+      // maplibre's GPUInitializationError carries the driver's
+      // webglcontextcreationerror statusMessage. Discarding it left the fallback
+      // indistinguishable from a deliberate opt-out.
+      console.error("atlas: map construction failed", error);
       onUnavailableRef.current?.();
       return;
     }
